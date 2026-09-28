@@ -116,3 +116,114 @@ echo '0x0000000000000000000000000000000000000001'
     assert.ok(calls.includes("chain-id"), `chain was not checked: ${JSON.stringify(calls)}`);
     assert.ok(!calls.includes("send") && !calls.includes("key-read"), `keys read or send attempted: ${JSON.stringify(calls)}`);
   }));
+
+test("complete refuses when IMD's pairing code expired while the approval was mining", () =>
+  scratch((folder) => {
+    const pairing = JSON.parse(readFileSync(fixture, "utf8"));
+    pairing.expiresAt = T0 + 300;
+    const source = join(folder, "fixture.json");
+    const out = join(folder, "artifact.json");
+    writeFileSync(source, JSON.stringify(pairing));
+    assert.equal(run(T0, ["prepare", source, "--vault", fakeVault, "--token", "2048", "--out", out], folder).status, 0);
+    const artifact = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(artifact.codeExpiresAt, T0 + 300);
+    assert.equal(artifact.message.expiresAt, T0 + 600);
+    assert.equal(run(T0 + 299, ["complete", out], folder).status, 0);
+    const late = run(T0 + 301, ["complete", out], folder);
+    assert.notEqual(late.status, 0);
+    assert.match(late.stderr, /pairing code expired/);
+  }));
+
+test("prepare refuses a fractional or non-integer signature TTL", () =>
+  scratch((folder) => {
+    for (const ttl of ["600.5", "1e3", "-5", "0", "3601", "abc"]) {
+      const r = run(T0, ["prepare", fixture, "--vault", fakeVault, "--token", "2048", "--expires", ttl, "--out", join(folder, "a.json")], folder);
+      assert.notEqual(r.status, 0, `ttl ${ttl} was accepted`);
+    }
+    const bad = run(T0, ["prepare", fixture, "--vault", fakeVault, "--token", "2048", "--expires-at", String(T0 + 600.5), "--out", join(folder, "b.json")], folder);
+    assert.notEqual(bad.status, 0);
+  }));
+
+test("the artifact has exactly the expected shape and a tampered wallet is refused at completion", () =>
+  scratch((folder) => {
+    const out = join(folder, "artifact.json");
+    assert.equal(run(T0, ["prepare", fixture, "--vault", fakeVault, "--token", "2048", "--out", out], folder).status, 0);
+    const artifact = JSON.parse(readFileSync(out, "utf8"));
+    assert.deepEqual(Object.keys(artifact).sort(), ["chain", "code", "codeExpiresAt", "collection", "createdAt", "message", "vault"]);
+    assert.deepEqual(Object.keys(artifact.message).sort(), ["deviceKey", "expiresAt", "nonce", "relayOrigin", "tokenId", "wallet"]);
+    artifact.message.wallet = "0x" + "cd".repeat(20);
+    writeFileSync(out, JSON.stringify(artifact));
+    const r = run(T0 + 1, ["complete", out], folder);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /message\.wallet is not the vault/);
+  }));
+
+// The walkthrough's send/receipt helpers, extracted unchanged and run against command shims: no key is loaded, no
+// lifecycle step runs, nothing is signed or broadcast. The shims simulate a transaction that executed although the
+// node answered with an error, and a lagging replica that never shows its receipt.
+function sendScenario(folder, scenario) {
+  const source = readFileSync(walkthrough, "utf8");
+  const start = source.indexOf("receipt() {");
+  const end = source.indexOf("call() {", start);
+  assert.ok(start >= 0 && end > start, "walkthrough helpers not found");
+  writeFileSync(join(folder, "harness.sh"), `#!/usr/bin/env bash\nset -euo pipefail\nRPC=https://review.invalid\nSETTLE=0\n${source.slice(start, end)}\nsend PUBLIC_REVIEW_MARKER token 'transfer(address,uint256)' recipient 100\n`);
+  writeFileSync(join(folder, "cast"), `#!/usr/bin/env bash
+case "$1" in
+  wallet) echo 0x1111111111111111111111111111111111111111 ;;
+  nonce) if [ -f "$REVIEW_DIR/mined0" ]; then echo 1; else echo 0; fi ;;
+  mktx)
+    nonce=missing
+    while [ "$#" -gt 0 ]; do if [ "$1" = --nonce ]; then shift; nonce="$1"; fi; shift; done
+    echo "build $nonce" >> "$REVIEW_DIR/journal"
+    echo "raw$nonce" ;;
+  keccak) echo "hash-$2" ;;
+  publish)
+    for arg in "$@"; do raw="$arg"; done
+    echo "publish $raw" >> "$REVIEW_DIR/journal"
+    if [ "$raw" = raw0 ]; then
+      if [ ! -f "$REVIEW_DIR/mined0" ]; then echo execution >> "$REVIEW_DIR/journal"; touch "$REVIEW_DIR/mined0"; fi
+      case "$REVIEW_SCENARIO" in
+        nonce) echo 'nonce too low'; exit 1 ;;
+        transport) echo 'transport disconnected'; exit 1 ;;
+        reverted) echo hash-raw0 ;;
+      esac
+    else echo execution >> "$REVIEW_DIR/journal"; echo hash-raw1; fi ;;
+  receipt)
+    for arg in "$@"; do hash="$arg"; done
+    if [ "$REVIEW_SCENARIO" = reverted ]; then echo '{"status":"0x0"}';
+    elif [ "$hash" = hash-raw0 ]; then echo null;
+    else echo '{"status":"0x1"}'; fi ;;
+  *) exit 99 ;;
+esac
+`);
+  writeFileSync(join(folder, "python"), `#!/usr/bin/env bash\nif [ "$REVIEW_SCENARIO" = reverted ]; then echo 0x0; else echo 0x1; fi\n`);
+  writeFileSync(join(folder, "sleep"), "#!/usr/bin/env bash\nexit 0\n");
+  for (const name of ["cast", "python", "sleep", "harness.sh"]) chmodSync(join(folder, name), 0o755);
+  const result = spawnSync(bash, ["--noprofile", "--norc", "-c", 'export PATH="$REVIEW_DIR:$PATH"; exec bash "$REVIEW_DIR/harness.sh"'], {
+    encoding: "utf8",
+    timeout: 15000,
+    env: { ...process.env, REVIEW_DIR: bashPath(folder), REVIEW_SCENARIO: scenario },
+  });
+  assert.equal(result.error, undefined);
+  const journal = readFileSync(join(folder, "journal"), "utf8").trim().split(/\r?\n/);
+  return { ...result, journal };
+}
+
+for (const scenario of ["nonce", "transport"]) {
+  test(`walkthrough send never rebuilds a call with another nonce (${scenario} ambiguity)`, { skip: !existsSync(bash) }, () =>
+    scratch((folder) => {
+      const r = sendScenario(folder, scenario);
+      assert.equal(r.journal.filter((l) => l === "execution").length, 1, "executed more than once: " + r.journal.join(", "));
+      assert.equal(r.journal.filter((l) => l.startsWith("build")).length, 1, "rebuilt: " + r.journal.join(", "));
+      assert.notEqual(r.status, 0, "a missing receipt must not be reported as success");
+      assert.match(r.stdout, /no receipt/);
+    }));
+}
+
+test("walkthrough send treats a status-0 receipt as failure without rebuilding", { skip: !existsSync(bash) }, () =>
+  scratch((folder) => {
+    const r = sendScenario(folder, "reverted");
+    assert.notEqual(r.status, 0);
+    assert.equal(r.journal.filter((l) => l.startsWith("build")).length, 1);
+    assert.match(r.stdout, /transaction reverted/);
+  }));

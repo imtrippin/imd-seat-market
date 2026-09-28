@@ -14,7 +14,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// holder arrive here and are split by immutable terms.
 /// @notice Experimental, local prototype. What this vault enforces: the split of every reward-token transfer that
 /// actually reaches it, and the owner's right to take the NFT back without the provider, at any time, even after
-/// the agreement ended and even if the NFT arrived by a plain transfer. What it does not do: judge service,
+/// the agreement ended, even if the NFT arrived by a plain transfer, and without any call to the reward token.
+/// What it does not do: judge service,
 /// attribute rewards to jobs or periods, tell a misdirected transfer from a reward (every positive balance change
 /// of a token is shared), or revoke a device that IMD already enrolled (moving the NFT out is what makes that
 /// device stale on IMD's side). Rent and collateral stay in SeatEscrow; this contract never accepts deposits.
@@ -72,7 +73,6 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     event PairingApproved(bytes32 indexed digest, bytes32 deviceKey, bytes32 nonce, uint64 expiresAt);
     event PairingCleared(bytes32 indexed digest);
     event Settled(IERC20 indexed token, uint256 received, uint256 ownerShare, uint256 providerShare);
-    event SettlementSkipped(IERC20 indexed token);
     event Claimed(IERC20 indexed token, address indexed party, uint256 amount);
     event Ended(address indexed by, uint64 endedAt);
     event AgentRegistered(bytes data);
@@ -163,13 +163,13 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice The owner takes the seat back whenever this vault actually holds it: before or after the agreement
-    /// ended, whether it arrived by deposit or by plain transfer, without the provider. Rewards already in the
-    /// vault are settled first when the reward token allows it; if it does not, the NFT still leaves and the
-    /// rewards can be settled later by anyone. Ends the agreement and clears any pairing approval.
+    /// ended, whether it arrived by deposit or by plain transfer, without the provider. It makes no call to the
+    /// reward token, so nothing about that asset can delay the seat's return; rewards already in the vault stay
+    /// allocated to the same immutable split and anyone can settle them before or after. Ends the agreement and
+    /// clears any pairing approval.
     function withdrawNFT(address to) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();
         if (collection.ownerOf(tokenId) != address(this)) revert NotHeld();
-        _trySettle(rewardToken);
         if (!ended) _end();
         held = false;
         _clearApproval();
@@ -253,11 +253,14 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice The ERC-8004 registration IMD asks the holder wallet to send (`GET /agents/register-intent` gives the
-    /// calldata). The only owner-supplied call this vault makes, and only to the pinned registry, which can be
-    /// neither the seat collection nor the reward token. The registry may safe-mint an agent NFT here; the owner can
-    /// rescue it.
+    /// calldata). An owner-only call facility to the pinned registry, open only while the seat is held and the
+    /// agreement is open: any calldata of at least four bytes goes through (registration, metadata, transfers of
+    /// the agent NFT), so inspect IMD's proposed calldata before sending. The registry can be neither the seat
+    /// collection nor the reward token, and it may safe-mint an agent NFT here, which the owner can rescue
+    /// (moving that token changes its registered wallet on the registry's side).
     function registerAgent(bytes calldata data) external nonReentrant returns (bytes memory result) {
         if (msg.sender != owner) revert NotOwner();
+        if (ended) revert AlreadyEnded();
         if (!held) revert NotHeld();
         if (data.length < 4) revert InvalidTerms();
         bool ok;
@@ -324,15 +327,6 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         approvedDigest = bytes32(0);
         approvedUntil = 0;
         approvedChain = 0;
-    }
-
-    /// @dev Settlement that never blocks the caller: a reward token that cannot be read is skipped.
-    function _trySettle(IERC20 token) internal {
-        try token.balanceOf(address(this)) returns (uint256 balance) {
-            _settle(token, balance);
-        } catch {
-            emit SettlementSkipped(token);
-        }
     }
 
     function _settle(IERC20 token, uint256 balance) internal {

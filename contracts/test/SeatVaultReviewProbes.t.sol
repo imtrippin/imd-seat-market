@@ -138,7 +138,8 @@ contract SeatVaultReviewProbes is Test {
         vm.prank(owner);
         vault.withdrawNFT(owner);
         assertEq(seats.ownerOf(TOKEN), owner);
-        assertEq(vault.accounted(reward), amount, "full-precision split settled the whole balance");
+        vault.settle(reward);
+        assertEq(vault.accounted(reward), amount, "full-precision split settles the whole balance");
         assertEq(vault.claimable(reward, owner) + vault.claimable(reward, provider), amount);
     }
 
@@ -224,11 +225,12 @@ contract SeatVaultReviewProbes is Test {
         vault.withdrawNFT(address(rejector));
         assertTrue(vault.held());
         assertFalse(vault.ended());
-        assertEq(vault.accounted(reward), 0, "settlement also rolled back");
+        assertEq(vault.accounted(reward), 0, "withdrawal never settles");
         assertEq(seats.ownerOf(TOKEN), address(vault));
         vm.prank(owner);
         vault.withdrawNFT(owner);
         assertEq(seats.ownerOf(TOKEN), owner);
+        vault.settle(reward);
         assertEq(vault.claimable(reward, provider), 30);
     }
 

@@ -4,6 +4,8 @@ NFT owners compare worker hosts, negotiate reward splits, fund refundable collat
 
 **Fictional, local simulation.** No wallet, real IMD tokens, deployed contract, live pairing, worker control or verified advertising is connected. Switching roles is a test control, not authentication. Dark mode persists.
 
+**Scope of this page.** It describes the JavaScript simulation and its v0.3 per-period model. The on-chain contracts, the rental escrow (v2) and the seat vault, live in `contracts/` with their own README and design note; the simulation's model has not yet been realigned to the rental rule.
+
 Use **Look & feel** to compare Control room, Paper ledger, Terminal and the original design. All support light/dark mode; appearance preferences are separate from agreement data. See [visual directions and preview links](docs/VISUAL-DIRECTIONS.md).
 
 ## Today's payment flow

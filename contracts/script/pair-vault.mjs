@@ -12,7 +12,9 @@
 // prepare validates the pairing response, fixes the ABSOLUTE signature expiry, computes the message the owner must
 // approve, and writes everything to the artifact. The owner then sends `approvePairing(nonce, expiresAt,
 // relayOrigin)` to the vault and waits for it to be mined. complete re-reads the artifact (never recomputing the
-// time), signs it with OPERATOR_KEY when --sign is given, and POSTs /pair/complete only when --live is also given.
+// time), validates every field, signs it with OPERATOR_KEY when --sign is given, and POSTs /pair/complete only when
+// --live is also given. It refuses to sign or post once either clock has passed: the signature expiry, or IMD's
+// pairing-code expiry when the pairing response stated one.
 //
 // Two clocks: IMD's pairing code lives about five minutes after `imd pair` printed it; the signature's own expiry
 // (--expires, default 600 s, at most the vault's one-hour window) is separate. Both must still be valid when the
@@ -124,6 +126,41 @@ export const completionBody = (artifact, signature) => ({
   },
 });
 
+const HEX32_PREFIXED = /^0x[0-9a-f]{64}$/;
+
+/// Full check of a prepared artifact: every field the digest and the completion body depend on, and that the
+/// message's wallet is the vault the artifact names. Returns problems; empty means usable.
+export function validateArtifact(a) {
+  const problems = [];
+  if (!a || typeof a !== "object" || Array.isArray(a)) return ["artifact is not an object"];
+  if (!Number.isSafeInteger(a.chain) || a.chain <= 0) problems.push("chain is not a positive integer");
+  if (!ADDR.test(String(a.collection ?? ""))) problems.push("collection is not an address");
+  if (!ADDR.test(String(a.vault ?? ""))) problems.push("vault is not an address");
+  if (a.code !== null && a.code !== undefined && !CODE.test(String(a.code))) problems.push("code is malformed");
+  const m = a.message;
+  if (!m || typeof m !== "object" || Array.isArray(m)) return [...problems, "message missing"];
+  if (!HEX32_PREFIXED.test(String(m.deviceKey ?? ""))) problems.push("message.deviceKey is not 0x + 64 lowercase hex");
+  if (!HEX32_PREFIXED.test(String(m.nonce ?? ""))) problems.push("message.nonce is not 0x + 64 lowercase hex");
+  if (typeof m.wallet !== "string" || m.wallet !== String(a.vault ?? "").toLowerCase()) problems.push("message.wallet is not the vault");
+  if (!/^\d+$/.test(String(m.tokenId ?? ""))) problems.push("message.tokenId is not a decimal integer");
+  if (!Number.isSafeInteger(m.expiresAt) || m.expiresAt <= 0) problems.push("message.expiresAt is not a positive integer");
+  if (typeof m.relayOrigin !== "string" || !/^https:\/\/[^\s/]+$/.test(m.relayOrigin)) problems.push("message.relayOrigin is not an https origin");
+  return problems;
+}
+
+/// The two clocks: the signature's own expiry (message.expiresAt) and IMD's pairing-code expiry (codeExpiresAt,
+/// null when the pairing response did not state one). Both must still be ahead to sign or post.
+export function expiryProblems(a, nowSeconds) {
+  const problems = [];
+  if (a.message.expiresAt <= nowSeconds) problems.push("the approved signature expiry has passed: run prepare again and approve the new digest");
+  if (a.codeExpiresAt !== null && a.codeExpiresAt !== undefined) {
+    const t = parseExpiry(a.codeExpiresAt);
+    if (!Number.isFinite(t)) problems.push("codeExpiresAt is not a timestamp");
+    else if (t <= nowSeconds * 1000) problems.push("IMD's pairing code expired while the approval was mining: get a fresh code, run prepare again and approve its new digest");
+  }
+  return problems;
+}
+
 function selftest() {
   const expect = {
     relay: API,
@@ -134,6 +171,15 @@ function selftest() {
   };
   const good = { deviceKey: "aa".repeat(32), nonce: "bb".repeat(32), relayOrigin: API, chainId: 1, nftContract: expect.collection };
   const now = 1_800_000_000_000;
+  const goodArtifact = {
+    createdAt: 1_800_000_000,
+    code: null,
+    chain: 1,
+    collection: expect.collection,
+    vault: expect.vault,
+    message: buildMessage(good, expect, 1_800_000_600),
+    codeExpiresAt: null,
+  };
   const checks = [
     validatePairing(good, expect, now).length === 0,
     validatePairing({ ...good, relayOrigin: "https://evil.example", chainId: 8453, nonce: "zz", consumed: true }, expect, now).length === 4,
@@ -145,6 +191,15 @@ function selftest() {
     buildMessage(good, expect, 1_800_000_600).deviceKey === "0x" + "aa".repeat(32),
     buildMessage(good, expect, 1_800_000_600).expiresAt === 1_800_000_600,
     completionBody({ code: "ABCD", message: buildMessage(good, expect, 1) }, "0x01").message.deviceKey === "aa".repeat(32),
+    validateArtifact(goodArtifact).length === 0,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, wallet: "0x" + "cd".repeat(20) } }).length === 1,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, expiresAt: 1_800_000_600.5 } }).length === 1,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, nonce: "22".repeat(32) } }).length === 1,
+    validateArtifact({ ...goodArtifact, message: undefined }).length === 1,
+    expiryProblems(goodArtifact, 1_800_000_000).length === 0,
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_299).length === 0,
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_301).length === 1,
+    expiryProblems(goodArtifact, 1_800_000_600).length === 1,
   ];
   const pass = checks.every(Boolean);
   console.log(pass ? "selftest ok" : `selftest FAILED: ${JSON.stringify(checks)}`);
@@ -190,13 +245,17 @@ if (phase === "prepare") {
   const now = Math.floor(Date.now() / 1000);
   let expiresAt;
   if (has("--expires-at")) {
-    expiresAt = Number(flag("--expires-at"));
-    if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 3600) {
-      die("--expires-at must be a Unix time within the next hour");
+    const raw = flag("--expires-at", "");
+    expiresAt = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 3600) {
+      die("--expires-at must be an integer Unix time within the next hour");
     }
   } else {
-    const ttl = Number(flag("--expires", "600"));
-    if (!(ttl > 0 && ttl <= 3600)) die("--expires must be 1..3600 seconds (the vault's MAX_PAIRING_WINDOW)");
+    const raw = flag("--expires", "600");
+    const ttl = Number(raw);
+    if (!/^\d+$/.test(raw) || !(ttl >= 1 && ttl <= 3600)) {
+      die("--expires must be an integer 1..3600 seconds (the vault's MAX_PAIRING_WINDOW)");
+    }
     expiresAt = now + ttl;
   }
   const artifact = {
@@ -208,6 +267,8 @@ if (phase === "prepare") {
     message: buildMessage(pairing, expect, expiresAt),
     codeExpiresAt: pairing.expiresAt ?? null,
   };
+  const artifactProblems = validateArtifact(artifact);
+  if (artifactProblems.length) die("internal: the artifact failed validation:\n  - " + artifactProblems.join("\n  - "), 1);
   writeFileSync(out, JSON.stringify(artifact, null, 2) + "\n");
   const m = artifact.message;
   console.log(`artifact written: ${out}`);
@@ -228,10 +289,18 @@ if (phase === "prepare") {
 const file = args[1];
 if (!file) die("usage: pair-vault.mjs complete pairing.json [--sign] [--live]");
 const artifact = JSON.parse(readFileSync(file, "utf8"));
-for (const k of ["chain", "collection", "vault", "message"]) if (!(k in artifact)) die(`artifact missing ${k}`);
-const now = Math.floor(Date.now() / 1000);
-if (artifact.message.expiresAt <= now) die("the approved signature expiry has passed: run prepare again and approve the new digest", 1);
-console.log(`completing pairing for wallet ${artifact.vault}, token ${artifact.message.tokenId}, expiresAt ${artifact.message.expiresAt} (from the artifact, not recomputed)`);
+const artifactProblems = validateArtifact(artifact);
+if (artifactProblems.length) die("artifact rejected:\n  - " + artifactProblems.join("\n  - "), 1);
+// both clocks are checked now and again right before anything is posted
+const fresh = () => {
+  const problems = expiryProblems(artifact, Math.floor(Date.now() / 1000));
+  if (problems.length) die(problems.join("\n"), 1);
+};
+fresh();
+const codeNote = artifact.codeExpiresAt === null || artifact.codeExpiresAt === undefined
+  ? "code expiry unknown (the pairing response did not state one)"
+  : `code expires ${artifact.codeExpiresAt}`;
+console.log(`completing pairing for wallet ${artifact.vault}, token ${artifact.message.tokenId}, signature expiresAt ${artifact.message.expiresAt} (from the artifact, not recomputed); ${codeNote}`);
 if (!has("--sign")) {
   console.log("dry run: nothing signed, nothing sent (add --sign, and --live to post)");
   process.exit(0);
@@ -252,6 +321,7 @@ if (!has("--live")) {
   process.exit(0);
 }
 if (!artifact.code || !CODE.test(artifact.code)) die("the artifact has no real pairing code (it came from a fixture); nothing sent", 1);
+fresh();
 const r = await fetch(`${API}/pair/complete`, {
   method: "POST",
   headers: { "content-type": "application/json" },

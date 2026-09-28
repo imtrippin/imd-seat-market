@@ -324,6 +324,12 @@ contract SeatVaultTest is Test {
         vm.prank(owner);
         vm.expectRevert(SeatVault.RegistryCallFailed.selector);
         vault.registerAgent(data);
+        registry.setFail(false);
+        vm.prank(provider);
+        vault.end();
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.AlreadyEnded.selector);
+        vault.registerAgent(data); // the facility closes with the agreement
     }
 
     // ---------------------------------------------------------------- rewards
@@ -385,7 +391,9 @@ contract SeatVaultTest is Test {
         _deposit();
         _reward(100e18);
         vm.prank(owner);
-        vault.withdrawNFT(owner); // settles first, then ends, then moves the NFT
+        vault.withdrawNFT(owner); // ends, then moves the NFT; the reward token is not touched
+        assertEq(vault.pending(IERC20(address(imd))), 100e18, "what arrived before stays allocated to the same split");
+        vault.settle(IERC20(address(imd)));
         assertEq(vault.claimable(IERC20(address(imd)), provider), 30e18);
         assertEq(vault.claimable(IERC20(address(imd)), owner), 70e18);
         vm.prank(provider);

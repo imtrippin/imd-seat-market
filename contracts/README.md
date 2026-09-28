@@ -69,7 +69,7 @@ Constant per call; nothing grows with the agreement's history.
 
 ## Vault experiment (2026-09-28)
 
-`src/SeatVault.sol` is an isolated prototype of an NFT-holding vault that answers ERC-1271 for owner-approved pairings and splits rewards that reach it; see `VAULT-DESIGN.md`. It composes with this escrow (rent and deposit stay here). It was rehearsed on Base Sepolia against mocks (`script/testnet-walkthrough.sh`), reviewed once by Codex (findings fixed; the reproductions are `test/SeatVaultReviewProbes.t.sol`), and has not been paired with IMD or deployed on mainnet.
+`src/SeatVault.sol` is an isolated prototype of an NFT-holding vault that answers ERC-1271 for owner-approved pairings and splits rewards that reach it; see `VAULT-DESIGN.md`. It composes with this escrow (rent and deposit stay here). It was rehearsed on Base Sepolia against mocks (`script/testnet-walkthrough.sh`), reviewed twice by Codex (findings fixed; the reproductions are `test/SeatVaultReviewProbes.t.sol` and `test/SeatVaultV2Probes.t.sol`), and has not been paired with IMD or deployed on mainnet.
 
 ## Next steps
 
