@@ -26,6 +26,8 @@ contract Handler is Test {
     uint256 public lastAccrued;
     bool public ended;
     uint256 public accruedAtEnd;
+    bool public badRefund;
+    bool public badDraw;
 
     constructor(SeatEscrow escrow_, MockERC20 token_, uint256 dailyFee, uint256 requiredDeposit) {
         escrow = escrow_;
@@ -85,9 +87,13 @@ contract Handler is Test {
     }
 
     function draw() external {
+        uint256 reserveBefore = escrow.stateOf(id).reserve;
+        uint256 owedBefore = escrow.feeOwed(id);
+        uint256 expected = owedBefore < reserveBefore ? owedBefore : reserveBefore;
         vm.prank(provider);
         try escrow.draw(id) returns (uint256 amount) {
             drawsTotal += amount;
+            if (amount != expected) badDraw = true;
         } catch {}
         _after();
     }
@@ -110,9 +116,13 @@ contract Handler is Test {
     }
 
     function refund() external {
+        uint256 reserveBefore = escrow.stateOf(id).reserve;
+        uint256 owedBefore = escrow.feeOwed(id);
+        uint256 expected = reserveBefore > owedBefore ? reserveBefore - owedBefore : 0;
         vm.prank(owner);
         try escrow.refund(id) returns (uint256 amount) {
             refundsOut += amount;
+            if (amount != expected || escrow.stateOf(id).reserve != reserveBefore - amount) badRefund = true;
         } catch {}
         _after();
     }
@@ -165,12 +175,13 @@ contract SeatEscrowInvariants is Test {
         assertGe(escrow.feeAccrued(handler.id()), handler.lastAccrued());
     }
 
-    function invariant_refundKeepsUnpaidFeeReserved() public view {
-        if (handler.refundsOut() == 0) return;
-        // after a refund, whatever fee is still owed is either fully reserved or the reserve is exhausted
-        SeatEscrow.State memory s = _state();
-        uint256 owed = escrow.feeOwed(handler.id());
-        assertTrue(s.reserve >= owed || escrow.refundable(handler.id()) == 0);
+    function invariant_everyRefundReleasesExactlyTheExcess() public view {
+        // each successful refund paid reserve minus unpaid fee (or nothing), and the reserve fell by that amount
+        assertFalse(handler.badRefund());
+    }
+
+    function invariant_everyDrawTakesExactlyTheOwedFeeCappedByReserve() public view {
+        assertFalse(handler.badDraw());
     }
 
     function invariant_feeFrozenAfterExit() public view {

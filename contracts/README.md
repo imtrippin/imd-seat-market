@@ -1,12 +1,12 @@
 # SeatEscrow (contracts)
 
-The on-chain piece of Seat Market: **a rental with a security deposit**, one agreement per hosted seat. This is the simplified model the project owner chose on 2026-09-28 after the floor-and-acknowledgment version was built and reviewed; that version is preserved in git history (commits `8db325b` and `41af180`).
+The on-chain piece of Seat Market: **a rental with a security deposit**, one agreement per hosted seat. This is the simplified model the project owner chose on 2026-09-28 after the floor-and-acknowledgment version was built and reviewed; its reports and tests are kept locally under `review/`; the git history was rebuilt on 2026-09-28, so its commits no longer exist.
 
 **Status: local Foundry project with unit, fuzz, invariant and review-probe suites. Not deployed anywhere. Not audited.**
 
 ## The rule, in one sentence
 
-You rent a host by the day, you put down a small deposit, the host can take the fee from it if you stop paying, otherwise you get it back the moment you leave, and you pass the host its share of rewards yourself.
+You pay rent that accrues per second at an agreed daily rate; the host can collect unpaid rent from your deposit at any time; either party can end the rental; you can immediately withdraw whatever deposit is left after unpaid rent; and you separately fund the promised reward share for the host to claim.
 
 ## What the contract does
 
@@ -15,7 +15,8 @@ You rent a host by the day, you put down a small deposit, the host can take the 
 - **Fee**: accrues per second at `dailyFee / 24 h` from activation until either party calls `end`. The provider may `draw` unpaid fee from the deposit at any time, capped by what the deposit holds. The owner may `payFee` with fresh funds instead, capped by what is owed, so nothing can be prepaid. Top-ups via `deposit` never pay anyone by themselves.
 - **Share**: `payShare(amount, payoutRef)` by the owner, any time after activation including after exit, with the payout's transaction hash as the reference. Recorded in an event, never counted against fee, never drawn from the deposit.
 - **Exit**: `end` by either party freezes the fee. `refund` by the owner is immediate and releases the deposit beyond unpaid fee; unpaid fee stays reserved for the provider to `draw`. `claim` by the provider pulls everything funded and works after exit.
-- **Safety**: every amount and rate is bounded by 2^128 so nothing overflows; transfers in and out are checked for the exact amount, so fee-on-transfer, outbound-tax and similar tokens are refused and one agreement can never spend another's deposit; every money entrypoint is reentrancy-guarded; no admin, no upgrade path, no sweep.
+- **Safety**: every stored amount and rate, including the provider's unclaimed balance on every path that grows it, is bounded by 2^128 so nothing overflows (claim before it would exceed the bound); transfers in and out are checked for the exact amount, so fee-on-transfer, outbound-tax and similar tokens are refused and one agreement can never spend another's deposit; every money entrypoint is reentrancy-guarded; no admin, no upgrade path, no sweep.
+- **Supported assets**: one plain, fixed-balance ERC-20 (IMD is one). Transfers in and out are checked for the exact amount on both sides, so fee-on-transfer, recipient-tax and sender-surcharge tokens are refused. Deposits are pooled per asset, so a token whose balances change outside transfers (rebasing, upgradeable, pausable, or with a dishonest balanceOf) can leave a later claimant short; that cannot be detected on-chain and is why the first product pins one verified asset.
 - **Exposure**: `unsecured(id)` = unpaid fee beyond the deposit. A host's pause rule watches that number; the deposit size is the host's tolerance in days.
 
 ## What it deliberately does not do
@@ -63,8 +64,8 @@ Constant per call; nothing grows with the agreement's history.
 
 ## Review history
 
-- 2026-09-28, Codex, floor model at `8db325b`: two medium findings (oversized-acknowledgment overflow; outgoing transfers not checked for the exact amount), both fixed in `41af180`; its tests are carried over here where they still apply. Report and original tests are kept locally under `review/`.
-- 2026-09-28, rental model (this version): built on the project owner's decision; awaiting a second Codex pass.
+- 2026-09-28, Codex, first review (floor model): two medium findings (oversized-acknowledgment overflow; outgoing transfers not checked for the exact amount), both fixed the same day; its probes that still apply live in `test/SeatEscrowReviewProbes.t.sol`. Report and original tests kept locally under `review/`.
+- 2026-09-28, Codex, second review (rental model): B1 medium, claims and refunds could succeed while delivering less with a recipient-tax token (fixed: `_pushExact` now checks the recipient side too); B2 low, `payFee` and `draw` bypassed the 2^128 claim cap (fixed: every path that grows the claim checks it); T1 low, a refund invariant was a tautology (replaced by exact per-refund and per-draw checks); P1 medium prerequisite, pooled backing needs a fixed-balance honest asset (documented above); D1 low, the one-sentence rule overstated (rewritten); P2 low, the deploy script now refuses any chain but Sepolia. Its reproductions became regressions in `test/SeatEscrowV2Probes.t.sol`.
 
 ## Next steps
 

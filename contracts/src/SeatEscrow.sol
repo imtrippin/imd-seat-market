@@ -181,6 +181,7 @@ contract SeatEscrow is ReentrancyGuard {
         uint256 due = feeOwed(id);
         if (due == 0) revert NothingDue();
         if (amount > due) revert ExceedsDue();
+        if (a.state.providerClaim + amount > MAX_AMOUNT) revert AmountTooLarge();
         _pullExact(a.terms.asset, msg.sender, amount);
         a.state.feeCredited += amount;
         a.state.providerClaim += amount;
@@ -208,6 +209,7 @@ contract SeatEscrow is ReentrancyGuard {
         uint256 due = feeOwed(id);
         amount = due < a.state.reserve ? due : a.state.reserve;
         if (amount == 0) revert NothingDue();
+        if (a.state.providerClaim + amount > MAX_AMOUNT) revert AmountTooLarge(); // claim first, then draw
         a.state.reserve -= amount;
         a.state.feeCredited += amount;
         a.state.providerClaim += amount;
@@ -321,11 +323,15 @@ contract SeatEscrow is ReentrancyGuard {
         if (asset.balanceOf(address(this)) - before != amount) revert UnsupportedToken();
     }
 
-    /// @dev Sends exactly `amount` from this contract's balance, so a token that taxes the sender on the way out can
-    /// never spend a deposit that backs another agreement in the same asset.
+    /// @dev Sends exactly `amount`: this contract's balance must fall by `amount` (so a token that taxes the sender
+    /// can never spend a deposit backing another agreement) and the recipient's must rise by `amount` (so a claim
+    /// or refund is never recorded as paid while delivering less).
     function _pushExact(IERC20 asset, address to, uint256 amount) internal {
         uint256 before = asset.balanceOf(address(this));
+        uint256 toBefore = asset.balanceOf(to);
         asset.safeTransfer(to, amount);
-        if (before - asset.balanceOf(address(this)) != amount) revert UnsupportedToken();
+        if (before - asset.balanceOf(address(this)) != amount || asset.balanceOf(to) - toBefore != amount) {
+            revert UnsupportedToken();
+        }
     }
 }

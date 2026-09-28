@@ -10,6 +10,7 @@ import {MockERC20} from "../test/Mocks.sol";
 /// Use a throwaway key with testnet ETH only. Never run this from a worker box.
 contract Deploy is Script {
     function run() external {
+        require(block.chainid == 11155111, "testnet only: Sepolia");
         vm.startBroadcast();
         MockERC20 token = new MockERC20();
         SeatEscrow escrow = new SeatEscrow();
