@@ -41,7 +41,7 @@ script/Deploy.s.sol                testnet deployment of the mock token and the 
 
 ```text
 forge build
-forge test              # 25 unit/fuzz/probe tests + 7 invariants (64 runs x 64 calls)
+forge test              # 85 tests across 8 suites (unit, fuzz, review probes, round-3 probes; the invariant suite counts as one grouped test, 64 runs x 64 calls)
 forge test --gas-report
 forge fmt --check src test script
 ```

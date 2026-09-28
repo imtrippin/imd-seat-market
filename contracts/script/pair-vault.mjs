@@ -114,22 +114,35 @@ export const typedData = (artifact) => ({
   },
 });
 
-/// The body /pair/complete expects, mirroring the developer's reference: decimal token id, numeric expiry,
-/// unprefixed device key and nonce, lowercase wallet.
+/// The body /pair/complete expects, mirroring the developer's reference: decimal token id (a string), numeric
+/// expiry, unprefixed device key and nonce, lowercase wallet. Every transport field is named here on purpose: the
+/// artifact's message is never spread into the POST body, so a stray or mistyped field cannot ride along.
 export const completionBody = (artifact, signature) => ({
   code: artifact.code,
   signature,
   message: {
-    ...artifact.message,
     deviceKey: artifact.message.deviceKey.slice(2),
+    wallet: artifact.message.wallet,
+    tokenId: String(artifact.message.tokenId),
     nonce: artifact.message.nonce.slice(2),
+    expiresAt: artifact.message.expiresAt,
+    relayOrigin: artifact.message.relayOrigin,
   },
 });
 
 const HEX32_PREFIXED = /^0x[0-9a-f]{64}$/;
+const UINT256_MAX = (1n << 256n) - 1n;
+/// A token id as the digest and the completion body carry it: a canonical decimal string (no sign, no leading
+/// zeros, never a JSON number whose precision is already gone above 2^53) that encodes as an EIP-712 uint256.
+/// 78 digits is the length of 2^256 - 1. Canonical form matters because the body sends the string verbatim while
+/// the signature covers BigInt(string): "007" and "7" must not be two spellings of one id.
+const TOKEN_ID = /^(0|[1-9]\d{0,77})$/;
+const isUint256String = (v) => typeof v === "string" && TOKEN_ID.test(v) && BigInt(v) <= UINT256_MAX;
 
 /// Full check of a prepared artifact: every field the digest and the completion body depend on, and that the
-/// message's wallet is the vault the artifact names. Returns problems; empty means usable.
+/// message's wallet is the vault the artifact names. Returns problems; empty means structurally valid only.
+/// It says nothing about the chain: the vault's approved digest, its chain and its custody are checked on-chain
+/// before anything is signed or posted, not here.
 export function validateArtifact(a) {
   const problems = [];
   if (!a || typeof a !== "object" || Array.isArray(a)) return ["artifact is not an object"];
@@ -142,7 +155,7 @@ export function validateArtifact(a) {
   if (!HEX32_PREFIXED.test(String(m.deviceKey ?? ""))) problems.push("message.deviceKey is not 0x + 64 lowercase hex");
   if (!HEX32_PREFIXED.test(String(m.nonce ?? ""))) problems.push("message.nonce is not 0x + 64 lowercase hex");
   if (typeof m.wallet !== "string" || m.wallet !== String(a.vault ?? "").toLowerCase()) problems.push("message.wallet is not the vault");
-  if (!/^\d+$/.test(String(m.tokenId ?? ""))) problems.push("message.tokenId is not a decimal integer");
+  if (!isUint256String(m.tokenId)) problems.push("message.tokenId is not a decimal string that fits a uint256");
   if (!Number.isSafeInteger(m.expiresAt) || m.expiresAt <= 0) problems.push("message.expiresAt is not a positive integer");
   if (typeof m.relayOrigin !== "string" || !/^https:\/\/[^\s/]+$/.test(m.relayOrigin)) problems.push("message.relayOrigin is not an https origin");
   return problems;
@@ -196,6 +209,14 @@ function selftest() {
     validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, expiresAt: 1_800_000_600.5 } }).length === 1,
     validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, nonce: "22".repeat(32) } }).length === 1,
     validateArtifact({ ...goodArtifact, message: undefined }).length === 1,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: (1n << 256n).toString() } }).length === 1,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: ((1n << 256n) - 1n).toString() } }).length === 0,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: 2048 } }).length === 1,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: "0" } }).length === 0,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: "007" } }).length === 1,
+    validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: "+7" } }).length === 1,
+    typeof completionBody({ code: "ABCD", message: { ...goodArtifact.message, tokenId: 2048 } }, "0x01").message.tokenId === "string",
+    Object.keys(completionBody({ code: "ABCD", message: { ...goodArtifact.message, extra: 1 } }, "0x01").message).length === 6,
     expiryProblems(goodArtifact, 1_800_000_000).length === 0,
     expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_299).length === 0,
     expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_301).length === 1,
@@ -221,8 +242,8 @@ if (phase === "prepare") {
     vault: flag("--vault"),
   };
   const out = flag("--out", "pairing.json");
-  if (!src || !expect.token || !/^\d+$/.test(expect.token) || !ADDR.test(expect.vault ?? "")) {
-    die("usage: pair-vault.mjs prepare <CODE|fixture.json> --vault 0x... --token <id> [--out pairing.json]");
+  if (!src || !expect.token || !isUint256String(expect.token) || !ADDR.test(expect.vault ?? "")) {
+    die("usage: pair-vault.mjs prepare <CODE|fixture.json> --vault 0x... --token <decimal id, no leading zeros> [--out pairing.json]");
   }
   if (!Number.isSafeInteger(expect.chain) || expect.chain <= 0) die("--chain must be a positive integer");
   if (!ADDR.test(expect.collection)) die("--collection must be an address");

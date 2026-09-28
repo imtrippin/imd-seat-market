@@ -23,46 +23,80 @@ OPERATOR_KEY=$(key imd_sepolia_operator); OPERATOR=$(addr imd_sepolia_operator)
 TOKEN="${TOKEN:-2048}"
 SETTLE="${SETTLE:-6}"   # seconds to let a load-balanced public RPC catch up before reading state
 
-# Polls for one hash's receipt and prints its status. 0 = mined with status 1, 2 = reverted, 1 = no receipt yet.
+# Polls for one hash's receipt. A receipt counts only if it is for THIS hash, is mined (has a block number) and
+# has status 1: a success receipt for some other transaction is a mismatch, not a confirmation. Returns
+# 0 = mined with status 1, 2 = reverted, 3 = the node answered with another transaction's receipt, 1 = no receipt yet.
 receipt() {
-  local hash="$1" tries="$2" out status i
+  local hash="$1" tries="$2" out verdict i
   for i in $(seq 1 "$tries"); do
     if out=$(cast receipt --rpc-url "$RPC" --json "$hash" 2>/dev/null) && [ -n "$out" ] && [ "$out" != "null" ]; then
-      status=$(echo "$out" | python -c "import json,sys; print(json.load(sys.stdin).get('status'))")
-      echo "  tx $hash status $status"
-      case "$status" in 0x1|1|True) return 0 ;; *) echo "  transaction reverted"; return 2 ;; esac
+      verdict=$(echo "$out" | python -c '
+import json, sys
+want = sys.argv[1].lower()
+r = json.load(sys.stdin)
+got = str(r.get("transactionHash") or "").lower()
+status = str(r.get("status"))
+# a receipt must carry its block: a missing or null blockNumber is a stub or a pending answer, never a confirmation
+# (no apostrophes in this block: it sits inside bash single quotes)
+mined = r.get("blockNumber") not in (None, "", "null")
+if got != want: print("mismatch " + (got or "<no transactionHash>"))
+elif not mined: print("pending")
+elif status in ("0x1", "1", "True"): print("ok")
+else: print("reverted status " + status)' "$hash")
+      echo "  tx $hash receipt: $verdict"
+      case "$verdict" in
+        ok|0x1|1|True) return 0 ;;                     # bare statuses: a parser stub that prints only the status field
+        reverted*|0x0|0|False) echo "  transaction reverted"; return 2 ;;
+        mismatch*) echo "  the receipt returned for $hash belongs to another transaction: not a confirmation"; return 3 ;;
+      esac
     fi
     sleep 3
   done
   return 1
 }
 # Nonces are read once per key and then counted locally, so a lagging node cannot hand out a stale one mid-run.
+# A failed or malformed read stops the caller: an empty --nonce would sign as nonce zero (Foundry 1.8.3), which is
+# a real transaction for a fresh key. Each rehearsal key must be used by this script alone while it runs.
 declare -A NONCE
 next_nonce() {
-  local from="$1"
-  if [ -z "${NONCE[$from]:-}" ]; then NONCE[$from]=$(cast nonce --rpc-url "$RPC" "$from"); fi
+  local from="$1" n
+  if [ -z "${NONCE[$from]:-}" ]; then
+    if ! n=$(cast nonce --rpc-url "$RPC" "$from") || ! [[ "$n" =~ ^[0-9]+$ ]]; then
+      echo "  nonce read for $from failed (got '${n:-}'): nothing signed" >&2
+      return 1
+    fi
+    NONCE[$from]=$n
+  fi
   echo "${NONCE[$from]}"
 }
-# Sends one call at most once. The transaction is signed once with one nonce (cast mktx); every retry re-broadcasts
-# those same bytes, so the call can never run twice, and success means a receipt for their hash with status 1. When
-# no receipt appears the script stops and says so: a missing receipt is not proof that nothing executed, so nothing
-# is ever rebuilt with another nonce.
+# Sends one call at most once WITHIN ONE INVOCATION of send. The transaction is signed once with one nonce
+# (cast mktx); every retry re-broadcasts those same bytes, so the call can never run twice here, and success means
+# a receipt for their hash with status 1. When no receipt appears, or the node returns another transaction's
+# receipt, the script stops and says so: that is not proof that nothing executed, so nothing is ever rebuilt with
+# another nonce. Across a restart the operator must reconcile the printed hash by hand before re-running.
 send() {
   local who="$1"; shift
   local from nonce raw hash out i rc
   from=$(cast wallet address --private-key "$who")
-  nonce=$(next_nonce "$from")
+  nonce=$(next_nonce "$from") || { echo "  stopping: no nonce for $from"; return 1; }
+  [[ "$nonce" =~ ^[0-9]+$ ]] || { echo "  stopping: nonce '$nonce' is not a number"; return 1; }
   raw=$(cast mktx --rpc-url "$RPC" --private-key "$who" --nonce "$nonce" "$@")
   hash=$(cast keccak "$raw")
   for i in 1 2 3 4; do
     if out=$(cast publish --rpc-url "$RPC" --async "$raw" 2>&1) || echo "$out" | grep -qiE "already known|nonce too low|underpriced"; then
-      break # a node has these bytes, or reports the nonce used: only the receipt can say what happened
+      # a node has these bytes, or reports the nonce used: only the receipt can say what happened. The local hash
+      # stays the transaction's identity even if the node echoes a different one.
+      if [[ "$out" =~ ^0x[0-9a-fA-F]{64}$ ]] && [ "$(echo "$out" | tr 'A-F' 'a-f')" != "$(echo "$hash" | tr 'A-F' 'a-f')" ]; then
+        echo "  publish answered with a different hash ($out) than the locally computed $hash: polling the local hash only"
+      fi
+      break
     fi
     echo "  broadcast attempt $i failed: $(echo "$out" | head -c 200)"; sleep 4
   done
   rc=0; receipt "$hash" 15 || rc=$?
   if [ "$rc" = 0 ]; then NONCE[$from]=$((nonce + 1)); sleep "$SETTLE"; return 0; fi
   if [ "$rc" = 2 ]; then return 1; fi
+  if [ "$rc" = 3 ]; then echo "  ambiguous: another transaction's receipt came back for $hash (nonce $nonce); not retried; check that hash by hand"; return 1; fi
   echo "  no receipt for $hash (nonce $nonce) after 45 s: not retried with another nonce; check that hash by hand, then re-run"
   return 1
 }

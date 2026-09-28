@@ -160,7 +160,12 @@ test("the artifact has exactly the expected shape and a tampered wallet is refus
 
 // The walkthrough's send/receipt helpers, extracted unchanged and run against command shims: no key is loaded, no
 // lifecycle step runs, nothing is signed or broadcast. The shims simulate a transaction that executed although the
-// node answered with an error, and a lagging replica that never shows its receipt.
+// node answered with an error, a lagging replica that never shows its receipt, a node that returns another
+// transaction's receipt, and a failed nonce read. The receipt parser is the real Python one when an interpreter is
+// available (REVIEW_PYTHON, python3 or python); otherwise a stub prints a bare status and the hash-check scenarios skip.
+const realPython = process.env.REVIEW_PYTHON
+  || ["python3", "python"].find((c) => spawnSync(c, ["-c", "print(1)"], { encoding: "utf8", timeout: 10000 }).status === 0)
+  || null;
 function sendScenario(folder, scenario) {
   const source = readFileSync(walkthrough, "utf8");
   const start = source.indexOf("receipt() {");
@@ -170,7 +175,9 @@ function sendScenario(folder, scenario) {
   writeFileSync(join(folder, "cast"), `#!/usr/bin/env bash
 case "$1" in
   wallet) echo 0x1111111111111111111111111111111111111111 ;;
-  nonce) if [ -f "$REVIEW_DIR/mined0" ]; then echo 1; else echo 0; fi ;;
+  nonce)
+    if [ "$REVIEW_SCENARIO" = nonce-error ]; then echo unavailable >&2; exit 1; fi
+    if [ -f "$REVIEW_DIR/mined0" ]; then echo 1; else echo 0; fi ;;
   mktx)
     nonce=missing
     while [ "$#" -gt 0 ]; do if [ "$1" = --nonce ]; then shift; nonce="$1"; fi; shift; done
@@ -190,22 +197,27 @@ case "$1" in
     else echo execution >> "$REVIEW_DIR/journal"; echo hash-raw1; fi ;;
   receipt)
     for arg in "$@"; do hash="$arg"; done
-    if [ "$REVIEW_SCENARIO" = reverted ]; then echo '{"status":"0x0"}';
+    if [ "$REVIEW_SCENARIO" = reverted ]; then echo "{\\"transactionHash\\":\\"$hash\\",\\"status\\":\\"0x0\\",\\"blockNumber\\":\\"0x1\\"}";
+    elif [ "$REVIEW_SCENARIO" = wrong-receipt ]; then echo '{"transactionHash":"other-hash","status":"0x1","blockNumber":"0x1"}';
     elif [ "$hash" = hash-raw0 ]; then echo null;
-    else echo '{"status":"0x1"}'; fi ;;
+    else echo "{\\"transactionHash\\":\\"$hash\\",\\"status\\":\\"0x1\\",\\"blockNumber\\":\\"0x1\\"}"; fi ;;
   *) exit 99 ;;
 esac
 `);
-  writeFileSync(join(folder, "python"), `#!/usr/bin/env bash\nif [ "$REVIEW_SCENARIO" = reverted ]; then echo 0x0; else echo 0x1; fi\n`);
+  // the real parser when an interpreter exists; the bare-status stub otherwise (it cannot check the hash)
+  writeFileSync(join(folder, "python"), realPython
+    ? `#!/usr/bin/env bash\nexec "$REVIEW_PYTHON" "$@"\n`
+    : `#!/usr/bin/env bash\nif [ "$REVIEW_SCENARIO" = reverted ]; then echo 0x0; else echo 0x1; fi\n`);
   writeFileSync(join(folder, "sleep"), "#!/usr/bin/env bash\nexit 0\n");
   for (const name of ["cast", "python", "sleep", "harness.sh"]) chmodSync(join(folder, name), 0o755);
   const result = spawnSync(bash, ["--noprofile", "--norc", "-c", 'export PATH="$REVIEW_DIR:$PATH"; exec bash "$REVIEW_DIR/harness.sh"'], {
     encoding: "utf8",
     timeout: 15000,
-    env: { ...process.env, REVIEW_DIR: bashPath(folder), REVIEW_SCENARIO: scenario },
+    env: { ...process.env, REVIEW_DIR: bashPath(folder), REVIEW_SCENARIO: scenario, ...(realPython ? { REVIEW_PYTHON: bashPath(realPython) } : {}) },
   });
   assert.equal(result.error, undefined);
-  const journal = readFileSync(join(folder, "journal"), "utf8").trim().split(/\r?\n/);
+  // a run that stops before any build or publish leaves no journal at all
+  const journal = existsSync(join(folder, "journal")) ? readFileSync(join(folder, "journal"), "utf8").trim().split(/\r?\n/) : [];
   return { ...result, journal };
 }
 
@@ -226,4 +238,22 @@ test("walkthrough send treats a status-0 receipt as failure without rebuilding",
     assert.notEqual(r.status, 0);
     assert.equal(r.journal.filter((l) => l.startsWith("build")).length, 1);
     assert.match(r.stdout, /transaction reverted/);
+  }));
+
+// Round three (2026-09-28): a success receipt for another hash is not a confirmation, and a failed nonce read
+// never reaches signing (an empty --nonce would sign as nonce zero).
+test("walkthrough send rejects a status-1 receipt that belongs to another transaction", { skip: !existsSync(bash) || !realPython }, () =>
+  scratch((folder) => {
+    const r = sendScenario(folder, "wrong-receipt");
+    assert.notEqual(r.status, 0, "a receipt for another hash was accepted as success");
+    assert.equal(r.journal.filter((l) => l.startsWith("build")).length, 1, "rebuilt: " + r.journal.join(", "));
+    assert.match(r.stdout, /belongs to another transaction/);
+  }));
+
+test("walkthrough send stops before signing when the nonce read fails", { skip: !existsSync(bash) }, () =>
+  scratch((folder) => {
+    const r = sendScenario(folder, "nonce-error");
+    assert.notEqual(r.status, 0, "a failed nonce read was turned into a send");
+    assert.equal(r.journal.filter((l) => l.startsWith("build") || l.startsWith("publish")).length, 0, "signed or published without a nonce: " + r.journal.join(", "));
+    assert.match(r.stderr + r.stdout, /nonce read for .* failed/);
   }));
