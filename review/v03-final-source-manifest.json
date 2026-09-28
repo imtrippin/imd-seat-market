@@ -1,0 +1,50 @@
+{
+  "capturedAt": "2026-09-28T18:27:49.646Z",
+  "node": "v22.11.0",
+  "files": [
+    {
+      "name": "package.json",
+      "sha256": "cecf24b272821656e11e0e61166e33dea09b54b785e6e908ef0b5ae859e79bf9"
+    },
+    {
+      "name": "dist/model.js",
+      "sha256": "535372ef16b6af96bb316d309fcf5a05ad8e8bccfddb77a2a79204a8ac78b905"
+    },
+    {
+      "name": "dist/app.js",
+      "sha256": "c458aa16e5399da6078bcc965eadf1344d526ccc4110773835a3068569b953c9"
+    },
+    {
+      "name": "dist/styles.css",
+      "sha256": "07907a8d898bba4908a259f4a1e9e7a2cade7f75ccdf8230ed9a717c3e632dc6"
+    },
+    {
+      "name": "dist/index.html",
+      "sha256": "4a40a56cdfb05b409450ea0fafcef0474c5ea2cabea5272d236fa1472966ea11"
+    },
+    {
+      "name": "server.mjs",
+      "sha256": "6fc5b5a3455d71f34680cde4b5b0f42639a43493ab54c1028103ad452db810ff"
+    },
+    {
+      "name": "test/model.test.mjs",
+      "sha256": "3a17b2aa0e79d0c8ed6e1aa06dd43c5e43a3ad56cdbd82f6959fa2938b50e6f4"
+    },
+    {
+      "name": "test/server.test.mjs",
+      "sha256": "3fedfc89c524c2327eb4911afa8fdbd15c3d2fda26c34eebb28d97509312d4da"
+    },
+    {
+      "name": "review/fuzz-v03.mjs",
+      "sha256": "3452b54cbb8129c3218c15f36e5ff951a466919832f152394257db34a24e27d3"
+    },
+    {
+      "name": "README.md",
+      "sha256": "13e0096866f3f4963c4e37c28eb3cdd7bd579866bb3d43f5b513fb10cb11e706"
+    },
+    {
+      "name": "CONTRACT-SPEC.md",
+      "sha256": "c137ad37505debd7da3dff31a591c8a108c454f5e3c8daf510ff079e37608446"
+    }
+  ]
+}

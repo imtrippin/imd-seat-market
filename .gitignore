@@ -1,0 +1,23 @@
+# Dependencies and environment
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db
+
+# Review directory: only the current randomized campaign, its results, the reviews the docs cite
+# and the final source-hash manifest are tracked. Raw review-run JSON, run metadata, stderr logs,
+# runner scripts, source snapshots, screenshots and superseded reviews stay local.
+review/*
+!review/fuzz-v03.mjs
+!review/fuzz-v03-seed-3.json
+!review/fuzz-v03-seed-11.json
+!review/claude-v03-bounded.md
+!review/V03-RESPONSE.md
+!review/HISTORY.md
+!review/v03-final-source-manifest.json
+
+# Foundry build artefacts (contracts/)
+contracts/out/
+contracts/cache/

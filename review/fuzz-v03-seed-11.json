@@ -1,0 +1,26 @@
+{
+  "seed": 11,
+  "runs": 3000,
+  "steps": 52909,
+  "applied": {
+    "advance": 15148,
+    "review": 1641,
+    "unlink": 802,
+    "pay": 3042,
+    "arrive": 15044,
+    "attest": 2038,
+    "withdraw": 1376,
+    "deposit": 4494,
+    "draw-reserve": 1064,
+    "amend": 1761,
+    "approve": 2001,
+    "end": 1810,
+    "transfer": 791,
+    "refund": 858,
+    "disconnect-transfer": 561,
+    "pair": 117,
+    "recovery": 176,
+    "discard": 185
+  },
+  "failures": 0
+}

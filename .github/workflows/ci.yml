@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Focused tests
+        run: node --test test/model.test.mjs test/server.test.mjs
+      - name: Randomized invariant campaign
+        run: |
+          node review/fuzz-v03.mjs 3
+          node review/fuzz-v03.mjs 11
+
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.3
+      - name: Format check
+        run: forge fmt --check src test script
+      - name: Build
+        run: forge build
+      - name: Unit, fuzz and invariant tests
+        run: forge test
