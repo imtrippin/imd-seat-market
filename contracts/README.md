@@ -67,6 +67,10 @@ Constant per call; nothing grows with the agreement's history.
 - 2026-09-28, Codex, first review (floor model): two medium findings (oversized-acknowledgment overflow; outgoing transfers not checked for the exact amount), both fixed the same day; its probes that still apply live in `test/SeatEscrowReviewProbes.t.sol`. Report and original tests kept locally under `review/`.
 - 2026-09-28, Codex, second review (rental model): B1 medium, claims and refunds could succeed while delivering less with a recipient-tax token (fixed: `_pushExact` now checks the recipient side too); B2 low, `payFee` and `draw` bypassed the 2^128 claim cap (fixed: every path that grows the claim checks it); T1 low, a refund invariant was a tautology (replaced by exact per-refund and per-draw checks); P1 medium prerequisite, pooled backing needs a fixed-balance honest asset (documented above); D1 low, the one-sentence rule overstated (rewritten); P2 low, the deploy script now refuses any chain but Sepolia. Its reproductions became regressions in `test/SeatEscrowV2Probes.t.sol`.
 
+## Vault experiment (2026-09-28)
+
+`src/SeatVault.sol` is an isolated prototype of an NFT-holding vault that answers ERC-1271 for owner-approved pairings and splits rewards that reach it; see `VAULT-DESIGN.md`. It composes with this escrow (rent and deposit stay here) and is not deployed, paired or reviewed yet.
+
 ## Next steps
 
 1. Second review of this version (`../docs/SWARM-REVIEW-BRIEF.md` for the swarm, once a public mirror or archive exists; Codex meanwhile).

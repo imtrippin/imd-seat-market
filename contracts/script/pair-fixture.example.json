@@ -1,0 +1,10 @@
+{
+  "_comment": "Example of what GET /pair/<code> is expected to return, for dry runs of pair-vault.mjs. Field shape is unverified against the live API; see VAULT-DESIGN.md question 2.",
+  "deviceKey": "1111111111111111111111111111111111111111111111111111111111111111",
+  "nonce": "2222222222222222222222222222222222222222222222222222222222222222",
+  "relayOrigin": "https://api.imd.fun",
+  "chainId": 1,
+  "nftContract": "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d",
+  "consumed": false,
+  "enrolled": false
+}
