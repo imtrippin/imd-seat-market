@@ -2,7 +2,7 @@
 
 The on-chain piece of Seat Market: **a rental with a security deposit**, one agreement per hosted seat. This is the simplified model the project owner chose on 2026-09-28 after the floor-and-acknowledgment version was built and reviewed; its reports and tests are kept locally under `review/`; the git history was rebuilt on 2026-09-28, so its commits no longer exist.
 
-**Status: local Foundry project with unit, fuzz, invariant and review-probe suites. Not deployed anywhere. Not audited.**
+**Status: local Foundry project with unit, fuzz, invariant and review-probe suites. Deployed only as a mock rehearsal on Base Sepolia with throwaway keys; not on mainnet, not paired with IMD. Not audited.**
 
 ## The rule, in one sentence
 
@@ -69,7 +69,7 @@ Constant per call; nothing grows with the agreement's history.
 
 ## Vault experiment (2026-09-28)
 
-`src/SeatVault.sol` is an isolated prototype of an NFT-holding vault that answers ERC-1271 for owner-approved pairings and splits rewards that reach it; see `VAULT-DESIGN.md`. It composes with this escrow (rent and deposit stay here) and is not deployed, paired or reviewed yet.
+`src/SeatVault.sol` is an isolated prototype of an NFT-holding vault that answers ERC-1271 for owner-approved pairings and splits rewards that reach it; see `VAULT-DESIGN.md`. It composes with this escrow (rent and deposit stay here). It was rehearsed on Base Sepolia against mocks (`script/testnet-walkthrough.sh`), reviewed once by Codex (findings fixed; the reproductions are `test/SeatVaultReviewProbes.t.sol`), and has not been paired with IMD or deployed on mainnet.
 
 ## Next steps
 

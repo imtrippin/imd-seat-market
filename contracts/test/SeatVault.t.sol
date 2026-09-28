@@ -119,8 +119,9 @@ contract SeatVaultTest is Test {
         MockERC721 other = new MockERC721();
         other.mint(owner, TOKEN);
         vm.prank(owner);
-        vm.expectRevert(SeatVault.WrongToken.selector);
-        other.safeTransferFrom(owner, address(vault), TOKEN);
+        other.safeTransferFrom(owner, address(vault), TOKEN); // another collection's token is accepted (rescuable)
+        assertEq(other.ownerOf(TOKEN), address(vault));
+        assertFalse(vault.held(), "an other-collection token never counts as the seat");
         vm.prank(stranger);
         vm.expectRevert(SeatVault.NotOwner.selector);
         vault.deposit();
@@ -264,8 +265,9 @@ contract SeatVaultTest is Test {
         vm.prank(owner);
         bytes32 second = vault.approvePairing(keccak256("nonce 2"), uint64(block.timestamp + 600), RELAY);
         assertEq(vault.isValidSignature(second, _sign(OPERATOR_KEY, second)), MAGIC);
+        assertEq(vault.approvedDigest(), second, "one active approval at a time");
         vm.prank(owner);
-        vault.revokePairing(second);
+        vault.revokePairing();
         assertEq(vault.isValidSignature(second, _sign(OPERATOR_KEY, second)), INVALID);
         // device replacement: only the new device's digest can be approved
         vm.prank(owner);
@@ -545,6 +547,10 @@ contract SeatVaultTest is Test {
         factory.create(provider, operator, 1, PROVIDER_BPS, bytes32(0), 0); // no device
         vm.expectRevert(SeatVault.InvalidTerms.selector);
         factory.create(provider, address(0), 1, PROVIDER_BPS, DEVICE, 0); // no operator
+        vm.expectRevert(SeatVault.InvalidTerms.selector);
+        factory.create(provider, owner, 1, PROVIDER_BPS, DEVICE, 0); // operator must not be the owner
+        vm.expectRevert(SeatVault.InvalidTerms.selector);
+        factory.create(provider, provider, 1, PROVIDER_BPS, DEVICE, 0); // nor the provider
         vm.stopPrank();
         assertEq(address(vault.collection()), address(seats));
         assertEq(address(vault.rewardToken()), address(imd));

@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: 22
       - name: Focused tests
-        run: node --test test/model.test.mjs test/server.test.mjs
+        run: node --test test/model.test.mjs test/server.test.mjs test/pair-vault.test.mjs
       - name: Randomized invariant campaign
         run: |
           node review/fuzz-v03.mjs 3

@@ -6,6 +6,12 @@
 set -euo pipefail
 VAULT="${1:?vault address}"; SEATS="${2:?mock seats address}"; IMD="${3:?mock imd address}"
 RPC="${4:-https://sepolia.base.org}"
+# Testnet guard first: no key is read and nothing is signed unless the RPC is Sepolia or Base Sepolia.
+CHAIN=$(cast chain-id --rpc-url "$RPC" 2>/dev/null || echo unknown)
+case "$CHAIN" in
+  11155111|84532) echo "chain $CHAIN ok" ;;
+  *) echo "refusing: chain $CHAIN is not Sepolia (11155111) or Base Sepolia (84532)"; exit 3 ;;
+esac
 KEYS="${KEYS:-$HOME/.ssh}"
 key() { python -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['private_key'])" "$KEYS/$1.json"; }
 addr() { python -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['address'])" "$KEYS/$1.json"; }
@@ -14,15 +20,47 @@ PROVIDER_KEY=$(key imd_sepolia_provider); PROVIDER=$(addr imd_sepolia_provider)
 OPERATOR_KEY=$(key imd_sepolia_operator); OPERATOR=$(addr imd_sepolia_operator)
 TOKEN="${TOKEN:-2048}"
 SETTLE="${SETTLE:-6}"   # seconds to let a load-balanced public RPC catch up before reading state
+
+# Polls for one hash's receipt and prints its status. 0 = mined with status 1, 2 = reverted, 1 = no receipt yet.
+receipt() {
+  local hash="$1" tries="$2" out status i
+  for i in $(seq 1 "$tries"); do
+    if out=$(cast receipt --rpc-url "$RPC" --json "$hash" 2>/dev/null) && [ -n "$out" ] && [ "$out" != "null" ]; then
+      status=$(echo "$out" | python -c "import json,sys; print(json.load(sys.stdin).get('status'))")
+      echo "  tx $hash status $status"
+      case "$status" in 0x1|1|True) return 0 ;; *) echo "  transaction reverted"; return 2 ;; esac
+    fi
+    sleep 3
+  done
+  return 1
+}
+# Sends one call exactly once. The transaction is signed locally with an explicit nonce (cast mktx), so a retry can
+# only re-broadcast the same bytes with the same hash, never the call twice; success means a receipt for that hash
+# with status 1. When a node calls the nonce taken (the previous step still settling on a lagging node), our hash
+# is checked for a receipt first and only then is the transaction rebuilt with a fresh nonce.
 send() {
   local who="$1"; shift
-  local out i
-  for i in 1 2 3 4; do
-    out=$(cast send --rpc-url "$RPC" --private-key "$who" "$@" --json 2>&1) || true
-    if echo "$out" | grep -q '"transactionHash"'; then
-      echo "$out" | python -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'], 'status', r['status'])"; sleep "$SETTLE"; return 0
-    fi
-    echo "  attempt $i: $(echo "$out" | head -c 200)"; sleep 4
+  local from nonce raw hash out i build rc
+  from=$(cast wallet address --private-key "$who")
+  for build in 1 2 3; do
+    nonce=$(cast nonce --rpc-url "$RPC" "$from")
+    raw=$(cast mktx --rpc-url "$RPC" --private-key "$who" --nonce "$nonce" "$@")
+    hash=$(cast keccak "$raw")
+    for i in 1 2 3 4; do
+      if out=$(cast publish --rpc-url "$RPC" --async "$raw" 2>&1) || echo "$out" | grep -qi "already known"; then
+        rc=0; receipt "$hash" 15 || rc=$?
+        [ "$rc" = 0 ] && { sleep "$SETTLE"; return 0; }
+        [ "$rc" = 2 ] && return 1
+        echo "  no receipt for $hash after 45 s: check it by hand before continuing"; return 1
+      fi
+      if echo "$out" | grep -qiE "nonce too low|underpriced"; then
+        rc=0; receipt "$hash" 4 || rc=$?
+        [ "$rc" = 0 ] && { sleep "$SETTLE"; return 0; }
+        [ "$rc" = 2 ] && return 1
+        echo "  nonce $nonce is taken on this node (previous step still settling): rebuilding"; sleep 4; break
+      fi
+      echo "  broadcast attempt $i failed: $(echo "$out" | head -c 200)"; sleep 4
+    done
   done
   echo "  giving up"; return 1
 }
@@ -45,7 +83,8 @@ NOW=$(cast block --rpc-url "$RPC" latest --field timestamp); EXP=$((NOW + 600))
 send "$OWNER_KEY" "$VAULT" "approvePairing(bytes32,uint64,string)" "$NONCE" "$EXP" "https://api.imd.fun"
 DEVICE=$(call "$VAULT" "deviceKey()(bytes32)")
 DIGEST=$(call "$VAULT" "workerAuthorizationDigest(bytes32,bytes32,uint64)(bytes32)" "$DEVICE" "$NONCE" "$EXP")
-echo "  digest $DIGEST   approved until $(call "$VAULT" "pairingApprovedUntil(bytes32)(uint64)" "$DIGEST")"
+echo "  digest $DIGEST"
+echo "  vault.approvedDigest = $(call "$VAULT" "approvedDigest()(bytes32)")   approved until $(call "$VAULT" "approvedUntil()(uint64)")"
 
 say "3. operator signs the digest (what the pairing script would send to IMD); the vault answers as a relay would"
 SIG=$(cast wallet sign --no-hash --private-key "$OPERATOR_KEY" "$DIGEST")
