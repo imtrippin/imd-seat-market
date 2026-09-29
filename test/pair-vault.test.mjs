@@ -134,6 +134,20 @@ test("complete refuses when IMD's pairing code expired while the approval was mi
     assert.match(late.stderr, /pairing code expired/);
   }));
 
+test("complete refuses a pairing code that expired earlier in the current second", () =>
+  scratch((folder) => {
+    const pairing = JSON.parse(readFileSync(fixture, "utf8"));
+    pairing.expiresAt = (T0 + 300) * 1000 + 100; // millisecond deadline inside second T0+300
+    const source = join(folder, "fixture.json");
+    const out = join(folder, "artifact.json");
+    writeFileSync(source, JSON.stringify(pairing));
+    assert.equal(run(T0, ["prepare", source, "--vault", fakeVault, "--token", "2048", "--out", out], folder).status, 0);
+    assert.equal(run(T0 + 300.099, ["complete", out], folder).status, 0, "1 ms before the deadline is still fresh");
+    const late = run(T0 + 300.9, ["complete", out], folder);
+    assert.notEqual(late.status, 0, "800 ms after the deadline must be refused");
+    assert.match(late.stderr, /pairing code expired/);
+  }));
+
 test("prepare refuses a fractional or non-integer signature TTL", () =>
   scratch((folder) => {
     for (const ttl of ["600.5", "1e3", "-5", "0", "3601", "abc"]) {

@@ -165,13 +165,14 @@ export function validateArtifact(a) {
 
 /// The two clocks: the signature's own expiry (message.expiresAt) and IMD's pairing-code expiry (codeExpiresAt,
 /// null when the pairing response did not state one). Both must still be ahead to sign or post.
-export function expiryProblems(a, nowSeconds) {
+export function expiryProblems(a, nowMs) {
   const problems = [];
-  if (a.message.expiresAt <= nowSeconds) problems.push("the approved signature expiry has passed: run prepare again and approve the new digest");
+  // the signature expiry is a whole-second on-chain deadline; the code deadline keeps millisecond precision
+  if (a.message.expiresAt <= Math.floor(nowMs / 1000)) problems.push("the approved signature expiry has passed: run prepare again and approve the new digest");
   if (a.codeExpiresAt !== null && a.codeExpiresAt !== undefined) {
     const t = parseExpiry(a.codeExpiresAt);
     if (!Number.isFinite(t)) problems.push("codeExpiresAt is not a timestamp");
-    else if (t <= nowSeconds * 1000) problems.push("IMD's pairing code expired while the approval was mining: get a fresh code, run prepare again and approve its new digest");
+    else if (t <= nowMs) problems.push("IMD's pairing code expired while the approval was mining: get a fresh code, run prepare again and approve its new digest");
   }
   return problems;
 }
@@ -205,7 +206,7 @@ function selftest() {
     validatePairing({ ...good, expiresAt: 1_799_999_000_000 }, expect, now).length === 1, // milliseconds, in the past
     validatePairing({ ...good, expiresAt: 1_800_000_300_000 }, expect, now).length === 0, // milliseconds, ahead
     validatePairing({ ...good, expiresAt: "1799999000000" }, expect, now).length === 1, // millisecond string, in the past
-    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_799_999_000_000 }, 1_800_000_000).length === 1,
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_799_999_000_000 }, 1_800_000_000_000).length === 1,
     validatePairing({ ...good, expiresAt: "2027-02-01T00:00:00Z" }, expect, now).length === 0,
     buildMessage(good, expect, 1_800_000_600).deviceKey === "0x" + "aa".repeat(32),
     buildMessage(good, expect, 1_800_000_600).expiresAt === 1_800_000_600,
@@ -223,10 +224,13 @@ function selftest() {
     validateArtifact({ ...goodArtifact, message: { ...goodArtifact.message, tokenId: "+7" } }).length === 1,
     typeof completionBody({ code: "ABCD", message: { ...goodArtifact.message, tokenId: 2048 } }, "0x01").message.tokenId === "string",
     Object.keys(completionBody({ code: "ABCD", message: { ...goodArtifact.message, extra: 1 } }, "0x01").message).length === 6,
-    expiryProblems(goodArtifact, 1_800_000_000).length === 0,
-    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_299).length === 0,
-    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_301).length === 1,
-    expiryProblems(goodArtifact, 1_800_000_600).length === 1,
+    expiryProblems(goodArtifact, 1_800_000_000_000).length === 0,
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_299_000).length === 0,
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300 }, 1_800_000_301_000).length === 1,
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300_100 }, 1_800_000_300_099).length === 0, // 1 ms before the code deadline
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_800_000_300_100 }, 1_800_000_300_900).length === 1, // expired within the same second
+    expiryProblems(goodArtifact, 1_800_000_600_000).length === 1,
+    expiryProblems(goodArtifact, 1_800_000_599_999).length === 0, // the signature deadline is whole seconds
   ];
   const pass = checks.every(Boolean);
   console.log(pass ? "selftest ok" : `selftest FAILED: ${JSON.stringify(checks)}`);
@@ -320,7 +324,7 @@ const artifactProblems = validateArtifact(artifact);
 if (artifactProblems.length) die("artifact rejected:\n  - " + artifactProblems.join("\n  - "), 1);
 // both clocks are checked now and again right before anything is posted
 const fresh = () => {
-  const problems = expiryProblems(artifact, Math.floor(Date.now() / 1000));
+  const problems = expiryProblems(artifact, Date.now());
   if (problems.length) die(problems.join("\n"), 1);
 };
 fresh();
