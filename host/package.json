@@ -1,0 +1,18 @@
+{
+  "name": "seat-host-helper",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "The host helper for a SeatVault agreement: talks to IMD, signs one pairing with the operator key, hands the owner the strings to paste. Also the library the agreement page is built from.",
+  "scripts": {
+    "offer": "node helper.mjs offer",
+    "pair": "node helper.mjs pair",
+    "resume": "node helper.mjs resume",
+    "status": "node helper.mjs status",
+    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/e2e-anvil.test.mjs",
+    "abi": "node scripts/sync-abi.mjs"
+  },
+  "dependencies": {
+    "viem": "2.57.1"
+  }
+}

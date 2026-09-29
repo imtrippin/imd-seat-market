@@ -47,7 +47,7 @@ jobs:
       - name: Unit and fuzz tests
         run: forge test
 
-  console:
+  host:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -64,11 +64,26 @@ jobs:
         working-directory: contracts
         run: forge build
       - name: Install
-        working-directory: console
+        working-directory: host
         run: npm ci --no-audit --no-fund
       - name: ABI files match the artifacts
-        working-directory: console
+        working-directory: host
         run: npm run abi && git diff --exit-code -- abi
       - name: Unit and end-to-end tests (anvil + fake IMD)
-        working-directory: console
+        working-directory: host
         run: npm test
+
+  page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: page
+        run: npm ci --no-audit --no-fund
+      - name: The committed bundle matches the sources and the config
+        working-directory: page
+        run: npm run check

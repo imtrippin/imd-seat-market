@@ -1,0 +1,17 @@
+{
+  "name": "seat-agreement-page",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The agreement page: one static HTML file for the NFT owner and the host, built from the host helper's library with a pinned bundler. No backend.",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "viem": "2.57.1"
+  }
+}

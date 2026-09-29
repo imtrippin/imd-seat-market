@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Your NFT, hosted</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" type="module"></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span aria-hidden="true">⌘</span> your nft / hosted</div>
+    <div id="vaultBox" class="vaultbox"></div>
+    <div id="walletBox" class="walletbox"></div>
+  </header>
+  <main>
+    <section id="main" class="card main"></section>
+    <section id="notes" class="notes"></section>
+    <details id="fold" class="fold"><summary>Details and history</summary><div id="details"></div></details>
+  </main>
+  <footer><span>Everything shown is read from the chain through your wallet and from IMD's public listing. Nothing is stored anywhere but this browser.</span><button class="link" id="resetBtn">Forget this browser's page data</button></footer>
+  <dialog id="dialog"><div id="dialogContent"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
