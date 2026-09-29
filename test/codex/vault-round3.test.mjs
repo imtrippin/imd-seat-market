@@ -41,17 +41,18 @@ test('hex is lowercase and prefixed; message wallet must be lowercase vault',()=
   }
 });
 test('both clocks are exclusive at their deadline and unknown code expiry stays explicit',()=>{
-  const a=good();assert.deepEqual(expiryProblems(a,T0+299),[]);
-  assert.equal(expiryProblems(a,T0+300).length,1);
-  a.codeExpiresAt=null;assert.deepEqual(expiryProblems(a,T0+599),[]);
-  assert.equal(expiryProblems(a,T0+600).length,1);
+  // the helper takes the clock in milliseconds (the code deadline is exact, the signature deadline whole seconds)
+  const a=good();assert.deepEqual(expiryProblems(a,(T0+299)*1000),[]);
+  assert.equal(expiryProblems(a,(T0+300)*1000).length,1);
+  a.codeExpiresAt=null;assert.deepEqual(expiryProblems(a,(T0+599)*1000+999),[]);
+  assert.equal(expiryProblems(a,(T0+600)*1000).length,1);
 });
 test('scope witness: schema validation cannot attest the vault chain or approved digest',()=>{
   const a=good();a.chain=84532; // no RPC/vault supplied to validation
   assert.deepEqual(validateArtifact(a),[]);
   a.message.expiresAt=T0+7200;
   assert.deepEqual(validateArtifact(a),[]);
-  assert.deepEqual(expiryProblems(a,T0),[]);
+  assert.deepEqual(expiryProblems(a,T0*1000),[]);
 });
 
 const bash=process.platform==='win32'?'C:/Program Files/Git/bin/bash.exe':'/bin/bash';
