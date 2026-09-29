@@ -22,7 +22,7 @@ You pay rent that accrues per second at an agreed daily rate; the host can colle
 ## What it deliberately does not do
 
 - It cannot see rewards, which land in the owner's wallet, so the share is honour-based and public. Knowing the payer contract makes disputes mechanical, not enforceable.
-- It does not observe pairing, NFT transfers or uptime, and it does not pause a worker. The public IMD standing routes are the evidence source (see `../CONTRACT-SPEC.md`).
+- It does not observe pairing, NFT transfers or uptime, and it does not pause a worker. The public IMD standing routes (documented at imd.fun/docs) are the evidence source for service and disputes.
 
 ## Layout
 

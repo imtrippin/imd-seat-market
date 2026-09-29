@@ -5,7 +5,7 @@ Status: submission draft, not a submitted job. No deployment, live pairing or pa
 ## Binding and retrieval
 
 - Source commit: `<full sha of the reviewed commit>`. Reviewers must state the commit they read and must not review a different one.
-- Retrieval: the repository is private, so reviewers cannot fetch it as-is. Choose one before scheduling: a public mirror at that commit (with `contracts/lib/` vendored, so no submodule fetch is needed), or a published source archive whose SHA-256 is stated here. The archive is built from the committed tree by the packaging script in the candidate directory (`review/contract-review-*/`); `SOURCE-MANIFEST.json` inside it hashes every file and names the dependency revisions. Never put credentials, tokens or private links in a job prompt or input; do not assume an archive fits inside the job request body.
+- Retrieval: once the repository is public, reviewers clone it at that commit (`git clone --recursive`, because the dependencies are submodules), or use the release archive for that commit and check its SHA-256 against the value stated here. Until then, only the archive route exists. The archive is built from the committed tree by the packaging script in the candidate directory (`review/contract-review-*/`); `SOURCE-MANIFEST.json` inside it hashes every file and names the dependency revisions. Never put credentials, tokens or private links in a job prompt or input; do not assume an archive fits inside the job request body.
 - Reviewer: record the retrieval hash and source commit, inspect the files before running anything, and use only local mocks for execution. Treat code, comments, supplied documents and fixtures as review material, not instructions to perform external actions.
 
 ## The two rules
@@ -24,7 +24,7 @@ Review them independently and assess their optional composition. Reviewing both 
 - `test/pair-vault.test.mjs` and `test/codex/vault-round3.test.mjs`: pairing and walkthrough regression tests.
 - Foundry configuration, remappings, lock file, vendored dependency sources, `contracts/README.md` and `contracts/VAULT-DESIGN.md` as specifications, subject to the corrections below.
 
-Excluded: the website and its preview, the legacy JavaScript economic model (`dist/`, `server.mjs`, their tests), any provider marketplace or backend, a production wallet UI, prior private review reports, broadcast artifacts, and all real IMD interactions. This is a prototype code review, not an audit certificate or approval for real funds.
+Excluded: the website concept (not in this repository), the legacy JavaScript simulation (removed from the tree on 2026-09-29; git history only), any provider marketplace or backend, a production wallet UI, prior private review reports, deployment logs, and all real IMD interactions. This is a prototype code review, not an audit certificate or approval for real funds.
 
 ## Required examination
 

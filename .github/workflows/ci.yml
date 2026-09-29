@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  scripts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -17,12 +17,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Focused tests
-        run: node --test test/model.test.mjs test/server.test.mjs test/pair-vault.test.mjs
-      - name: Randomized invariant campaign
-        run: |
-          node review/fuzz-v03.mjs 3
-          node review/fuzz-v03.mjs 11
+      - name: Pairing helper self-test
+        run: node contracts/script/pair-vault.mjs --selftest
+      - name: Offline script tests
+        env:
+          REVIEW_PYTHON: python3
+        run: node --test test/pair-vault.test.mjs test/codex/vault-round3.test.mjs
 
   contracts:
     runs-on: ubuntu-latest

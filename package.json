@@ -1,10 +1,9 @@
 {
-  "name": "seat-market-prototype",
-  "version": "0.3.0",
+  "name": "seat-market-contracts",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/pair-vault.test.mjs test/codex/vault-round3.test.mjs"
   }
 }
