@@ -41,6 +41,10 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         "WorkerAuthorization(bytes32 deviceKey,address wallet,uint256 tokenId,bytes32 nonce,uint64 expiresAt,string relayOrigin)"
     );
     uint256 public constant MAX_PAIRING_WINDOW = 1 hours;
+    /// @dev The ERC-8004 identity registry's registration functions (implementation verified 2026-09-29).
+    bytes4 public constant REGISTER_SELECTOR = bytes4(keccak256("register()"));
+    bytes4 public constant REGISTER_URI_SELECTOR = bytes4(keccak256("register(string)"));
+    bytes4 public constant REGISTER_META_SELECTOR = bytes4(keccak256("register(string,(string,bytes)[])"));
     uint256 public constant BPS = 10_000;
 
     address public immutable owner;
@@ -91,6 +95,8 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     error UseWithdraw();
     error RegistryCallFailed();
     error UnsupportedToken();
+    error NotARegistration();
+    error ZeroAddress();
 
     constructor(
         address owner_,
@@ -167,6 +173,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     /// clears any pairing approval.
     function withdrawNFT(address to) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();
+        if (to == address(0)) revert ZeroAddress();
         if (collection.ownerOf(tokenId) != address(this)) revert NotHeld();
         if (!ended) _end();
         held = false;
@@ -176,9 +183,11 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice Either party ends the agreement: no new pairing can be approved or validated. The NFT stays until
-    /// the owner withdraws it; allocations stay claimable.
+    /// the owner withdraws it; allocations stay claimable. The provider can end only once the seat is in the
+    /// vault, so it cannot kill a fresh vault before the owner deposits.
     function end() external {
         if (msg.sender != owner && msg.sender != provider) revert NotParty();
+        if (msg.sender == provider && collection.ownerOf(tokenId) != address(this)) revert NotHeld();
         if (ended) revert AlreadyEnded();
         _end();
         _clearApproval();
@@ -251,16 +260,21 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice The ERC-8004 registration IMD asks the holder wallet to send (`GET /agents/register-intent` gives the
-    /// calldata). An owner-only call facility to the pinned registry, open only while the seat is held and the
-    /// agreement is open: any calldata of at least four bytes goes through (registration, metadata, transfers of
-    /// the agent NFT), so inspect IMD's proposed calldata before sending. The registry can be neither the seat
-    /// collection nor the reward token, and it may safe-mint an agent NFT here, which the owner can rescue
-    /// (moving that token changes its registered wallet on the registry's side).
+    /// calldata). Owner-only, while the seat is held and the agreement is open, to the pinned registry, and only
+    /// one of the registry's three `register` functions: `register()`, `register(string)` and
+    /// `register(string,(string,bytes)[])`. Anything else (approvals, transfers, metadata) is refused, so calldata
+    /// proposed by a third party cannot hand the agent NFT away. If the registry's implementation changes its
+    /// registration ABI, this fails closed and needs a new vault version. The registry may safe-mint an agent NFT
+    /// here, which the owner can rescue (moving that token changes its registered wallet on the registry's side).
     function registerAgent(bytes calldata data) external nonReentrant returns (bytes memory result) {
         if (msg.sender != owner) revert NotOwner();
         if (ended) revert AlreadyEnded();
         if (!held) revert NotHeld();
         if (data.length < 4) revert InvalidTerms();
+        bytes4 selector = bytes4(data[:4]);
+        if (selector != REGISTER_SELECTOR && selector != REGISTER_URI_SELECTOR && selector != REGISTER_META_SELECTOR) {
+            revert NotARegistration();
+        }
         bool ok;
         (ok, result) = identityRegistry.call(data);
         if (!ok) revert RegistryCallFailed();
@@ -273,17 +287,22 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     /// gets the floor of its share, the provider the remainder, rounding once per settlement. Anyone may call it;
     /// claims call it first.
     function settle(IERC20 token) external nonReentrant {
+        _rejectNonRewards(token);
         _settle(token, token.balanceOf(address(this)));
     }
 
     /// @notice A party takes its allocation of `token`. Rewards that arrived but were not yet settled are settled
-    /// first, so nothing can be claimed past an incoming transfer.
+    /// first, so nothing can be claimed past an incoming transfer. If the token's balance fell outside transfers
+    /// (an unsupported asset), the claim pays what is there and keeps the rest allocated.
     function claim(IERC20 token) external nonReentrant returns (uint256 amount) {
         if (msg.sender != owner && msg.sender != provider) revert NotParty();
-        _settle(token, token.balanceOf(address(this)));
+        _rejectNonRewards(token);
+        uint256 balance = token.balanceOf(address(this));
+        _settle(token, balance);
         amount = claimable[token][msg.sender];
+        if (amount > balance) amount = balance;
         if (amount == 0) revert NothingToClaim();
-        claimable[token][msg.sender] = 0;
+        claimable[token][msg.sender] -= amount;
         accounted[token] -= amount;
         _pushExact(token, msg.sender, amount);
         emit Claimed(token, msg.sender, amount);
@@ -303,10 +322,13 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         return known > balance ? known - balance : 0;
     }
 
-    /// @notice Moves an NFT that is not the seat (an agent registry token, or a mistake) to `to`.
+    /// @notice Moves an NFT that is not the seat (an agent registry token, or a mistake) to `to`. The reward token
+    /// is never a rescue target: rewards leave only through `claim`.
     function rescueERC721(IERC721 other, uint256 id, address to) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();
+        if (to == address(0)) revert ZeroAddress();
         if (address(other) == address(collection) && id == tokenId) revert UseWithdraw();
+        if (address(other) == address(rewardToken)) revert UnsupportedToken();
         other.safeTransferFrom(address(this), to, id);
     }
 
@@ -325,6 +347,12 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         approvedDigest = bytes32(0);
         approvedUntil = 0;
         approvedChain = 0;
+    }
+
+    /// @dev The seat collection and the registry are ERC-721s: their `balanceOf` is a token count, never a reward,
+    /// and a collection with a legacy `transfer(address,uint256)` would move a seat on a claim.
+    function _rejectNonRewards(IERC20 token) internal view {
+        if (address(token) == address(collection) || address(token) == identityRegistry) revert UnsupportedToken();
     }
 
     function _settle(IERC20 token, uint256 balance) internal {
@@ -396,6 +424,7 @@ contract SeatVaultFactory {
             relayOrigin
         );
         vaults.push(address(vault));
+        // forge-lint: disable-next-line(reentrancy-events)
         emit VaultCreated(address(vault), msg.sender, provider, tokenId, providerBps);
     }
 

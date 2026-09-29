@@ -6,7 +6,7 @@ One small Solidity contract for letting someone else host an IMD seat NFT, with 
 
 The listing's only number is the host's percentage. Everything else the host offers (machine, skills, model access, support) is a promise the vault does not judge; an idle seat pays nothing, and the owner may leave at any moment.
 
-**Status: prototype.** Unit, fuzz, sequence-fuzz and review-probe suites; three reviewer rounds with every reproduction kept as a regression; a scripted rehearsal on Base Sepolia against mocks. Not audited, not deployed on mainnet, not paired with IMD. The integration points that only a live IMD test can settle are listed in [the review brief](docs/SWARM-REVIEW-BRIEF.md). The tests run against mocks and never touch a chain; the pairing helper is a dry run unless its live flags are set; the testnet scripts sign and broadcast only when deliberately run with keys and an RPC, and refuse any chain but Sepolia or Base Sepolia.
+**Status: prototype.** Unit, fuzz, invariant and review-probe suites; three reviewer rounds and one IMD swarm review, with every reproduction kept as a regression; a scripted rehearsal on Base Sepolia against mocks. Not audited, not deployed on mainnet, not paired with IMD. The integration points that only a live IMD test can settle are listed in [the review brief](docs/SWARM-REVIEW-BRIEF.md). The tests run against mocks and never touch a chain; the pairing helper is a dry run unless its live flags are set; the testnet scripts sign and broadcast only when deliberately run with keys and an RPC, and refuse any chain but Sepolia or Base Sepolia.
 
 ## Layout
 

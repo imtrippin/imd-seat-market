@@ -158,9 +158,9 @@ contract SeatVaultV2Probes is Test {
             } else if (action == 1 && holder == owner) {
                 vm.prank(owner);
                 seats.transferFrom(owner, address(target), TOKEN);
-            } else if (action == 2 && !target.ended()) {
+            } else if (action == 2 && !target.ended() && holder == address(target)) {
                 vm.prank(provider);
-                target.end();
+                target.end(); // the provider can end only once the seat is in the vault
             } else if (action == 3 && holder == address(target)) {
                 vm.prank(owner);
                 target.withdrawNFT(owner);

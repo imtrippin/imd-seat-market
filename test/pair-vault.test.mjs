@@ -163,9 +163,17 @@ test("the artifact has exactly the expected shape and a tampered wallet is refus
 // node answered with an error, a lagging replica that never shows its receipt, a node that returns another
 // transaction's receipt, and a failed nonce read. The receipt parser is the real Python one when an interpreter is
 // available (REVIEW_PYTHON, python3 or python); otherwise a stub prints a bare status and the hash-check scenarios skip.
-const realPython = process.env.REVIEW_PYTHON
-  || ["python3", "python"].find((c) => spawnSync(c, ["-c", "print(1)"], { encoding: "utf8", timeout: 10000 }).status === 0)
-  || null;
+// The receipt parser is the real Python one when an interpreter is available. REVIEW_PYTHON wins; otherwise
+// python3/python are asked for their own absolute path, so the harness's `python` shim can never exec itself.
+function findPython() {
+  if (process.env.REVIEW_PYTHON) return process.env.REVIEW_PYTHON;
+  for (const c of ["python3", "python"]) {
+    const r = spawnSync(c, ["-c", "import sys; print(sys.executable)"], { encoding: "utf8", timeout: 10000 });
+    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+  }
+  return null;
+}
+const realPython = findPython();
 function sendScenario(folder, scenario) {
   const source = readFileSync(walkthrough, "utf8");
   const start = source.indexOf("receipt() {");

@@ -7,6 +7,8 @@ import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 
 const here=dirname(fileURLToPath(import.meta.url));
+// REVIEW_PYTHON wins; otherwise python3/python report their own absolute path (never the harness's `python` shim).
+const realPython=process.env.REVIEW_PYTHON||['python3','python'].map(c=>{const r=spawnSync(c,['-c','import sys; print(sys.executable)'],{encoding:'utf8',timeout:10000});return r.status===0?r.stdout.trim():'';}).find(Boolean)||null;
 const pairing=resolve(here,'../../contracts/script/pair-vault.mjs');
 const walkthrough=resolve(here,'../../contracts/script/testnet-walkthrough.sh');
 const source=readFileSync(pairing,'utf8');
@@ -86,11 +88,11 @@ case "$1" in
 esac
 `);
   // Run the real production Python parser, not a stub that might conceal future hash checks.
-  assert.ok(process.env.REVIEW_PYTHON,'Set REVIEW_PYTHON to a Python executable for the offline receipt probes.');
+  assert.ok(realPython,'no Python 3 interpreter found (REVIEW_PYTHON, python3 or python)');
   writeFileSync(join(folder,'python'),'#!/usr/bin/env bash\nexec "$REVIEW_PYTHON" "$@"\n');
   writeFileSync(join(folder,'sleep'),'#!/usr/bin/env bash\nexit 0\n');
   for(const name of ['cast','python','sleep','harness.sh'])chmodSync(join(folder,name),0o755);
-  const r=spawnSync(bash,['--noprofile','--norc','-c','export PATH="$REVIEW_DIR:$PATH"; exec bash "$REVIEW_DIR/harness.sh"'],{encoding:'utf8',timeout:15000,env:{...process.env,REVIEW_DIR:bashPath(folder),REVIEW_MODE:mode,REVIEW_PYTHON:bashPath(process.env.REVIEW_PYTHON)}});
+  const r=spawnSync(bash,['--noprofile','--norc','-c','export PATH="$REVIEW_DIR:$PATH"; exec bash "$REVIEW_DIR/harness.sh"'],{encoding:'utf8',timeout:15000,env:{...process.env,REVIEW_DIR:bashPath(folder),REVIEW_MODE:mode,REVIEW_PYTHON:bashPath(realPython)}});
   assert.equal(r.error,undefined);
   return {...r,journal:readFileSync(join(folder,'journal'),'utf8').trim().split(/\r?\n/)};
 }

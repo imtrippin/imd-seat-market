@@ -68,7 +68,7 @@ contract SeatVaultTest is Test {
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
                 keccak256("IdentityMD Worker"),
                 keccak256("2"),
-                block.chainid,
+                vm.getChainId(),
                 address(seats)
             )
         );
@@ -248,10 +248,10 @@ contract SeatVaultTest is Test {
         bytes32 nonce = keccak256("imd nonce");
         vm.startPrank(owner);
         vm.expectRevert(SeatVault.BadExpiry.selector);
-        vault.approvePairing(nonce, uint64(block.timestamp), RELAY); // already expired
+        vault.approvePairing(nonce, uint64(vm.getBlockTimestamp()), RELAY); // already expired
         vm.expectRevert(SeatVault.BadExpiry.selector);
-        vault.approvePairing(nonce, uint64(block.timestamp + 1 hours + 1), RELAY); // beyond the window
-        uint64 expiresAt = uint64(block.timestamp + 900); // the script's default
+        vault.approvePairing(nonce, uint64(vm.getBlockTimestamp() + 1 hours + 1), RELAY); // beyond the window
+        uint64 expiresAt = uint64(vm.getBlockTimestamp() + 900); // the script's default
         bytes32 digest = vault.approvePairing(nonce, expiresAt, RELAY);
         vm.stopPrank();
         assertEq(vault.isValidSignature(digest, _sign(OPERATOR_KEY, digest)), MAGIC);
@@ -311,7 +311,7 @@ contract SeatVaultTest is Test {
 
     function test_registerAgentOnlyOwnerOnlyRegistry() public {
         _deposit();
-        bytes memory data = abi.encodeWithSignature("register(uint256,string)", TOKEN, "ipfs://agent-card");
+        bytes memory data = abi.encodeWithSignature("register(string)", "ipfs://agent-card"); // one of the three register selectors
         vm.prank(provider);
         vm.expectRevert(SeatVault.NotOwner.selector);
         vault.registerAgent(data);
@@ -499,7 +499,13 @@ contract SeatVaultTest is Test {
         vm.prank(provider);
         assertEq(v.claim(IERC20(address(shrinking))), 30e18, "first claimant is paid");
         vm.prank(owner);
-        vm.expectRevert(); // 70e18 allocated, 20e18 left: the last claimant bears the loss, the ledger does not lie
+        assertEq(v.claim(IERC20(address(shrinking))), 20e18, "the last claimant takes what is there");
+        assertEq(
+            v.claimable(IERC20(address(shrinking)), owner), 50e18, "the rest stays allocated, the ledger does not lie"
+        );
+        assertEq(v.shortfall(IERC20(address(shrinking))), 50e18);
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.NothingToClaim.selector); // nothing left to pay until the balance recovers
         v.claim(IERC20(address(shrinking)));
     }
 

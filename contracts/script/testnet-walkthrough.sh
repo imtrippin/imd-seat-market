@@ -14,9 +14,10 @@ case "$CHAIN" in
   11155111|84532) echo "chain $CHAIN ok" ;;
   *) echo "refusing: chain $CHAIN is not Sepolia (11155111) or Base Sepolia (84532)"; exit 3 ;;
 esac
-KEYS="${KEYS:-$HOME/.ssh}"
-key() { python -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['private_key'])" "$KEYS/$1.json"; }
-addr() { python -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['address'])" "$KEYS/$1.json"; }
+KEYS="${KEYS:-$HOME/.ssh}"   # the throwaway key files; point it at a dedicated directory if you keep them elsewhere
+PY="${REVIEW_PYTHON:-$(command -v python3 || command -v python)}"
+key() { "$PY" -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['private_key'])" "$KEYS/$1.json"; }
+addr() { "$PY" -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['address'])" "$KEYS/$1.json"; }
 OWNER_KEY=$(key imd_sepolia_deployer); OWNER=$(addr imd_sepolia_deployer)
 PROVIDER_KEY=$(key imd_sepolia_provider); PROVIDER=$(addr imd_sepolia_provider)
 OPERATOR_KEY=$(key imd_sepolia_operator); OPERATOR=$(addr imd_sepolia_operator)
@@ -30,7 +31,7 @@ receipt() {
   local hash="$1" tries="$2" out verdict i
   for i in $(seq 1 "$tries"); do
     if out=$(cast receipt --rpc-url "$RPC" --json "$hash" 2>/dev/null) && [ -n "$out" ] && [ "$out" != "null" ]; then
-      verdict=$(echo "$out" | python -c '
+      verdict=$(echo "$out" | "${REVIEW_PYTHON:-$(command -v python3 || command -v python)}" -c '
 import json, sys
 want = sys.argv[1].lower()
 r = json.load(sys.stdin)
@@ -83,7 +84,7 @@ send() {
   raw=$(cast mktx --rpc-url "$RPC" --private-key "$who" --nonce "$nonce" "$@")
   hash=$(cast keccak "$raw")
   for i in 1 2 3 4; do
-    if out=$(cast publish --rpc-url "$RPC" --async "$raw" 2>&1) || echo "$out" | grep -qiE "already known|nonce too low|underpriced"; then
+    if out=$(cast publish --rpc-url "$RPC" --async "$raw" 2>&1) || echo "$out" | grep -qiE "already known|nonce too low|replacement transaction underpriced"; then
       # a node has these bytes, or reports the nonce used: only the receipt can say what happened. The local hash
       # stays the transaction's identity even if the node echoes a different one.
       if [[ "$out" =~ ^0x[0-9a-fA-F]{64}$ ]] && [ "$(echo "$out" | tr 'A-F' 'a-f')" != "$(echo "$hash" | tr 'A-F' 'a-f')" ]; then
@@ -110,7 +111,7 @@ expect() {
   fi
   echo "  ok $label = $got"
 }
-minus() { python -c "import sys; print(int(sys.argv[1]) - int(sys.argv[2]))" "$1" "$2"; }
+minus() { "$PY" -c "import sys; print(int(sys.argv[1]) - int(sys.argv[2]))" "$1" "$2"; }
 
 say "roles: owner $OWNER · provider $PROVIDER · operator $OPERATOR"
 say "0. the owner must hold mock seat $TOKEN (minted here if the mock collection has none)"

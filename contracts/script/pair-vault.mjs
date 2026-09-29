@@ -38,12 +38,14 @@ const HEX32 = /^(0x)?[0-9a-fA-F]{64}$/;
 const ADDR = /^0x[0-9a-fA-F]{40}$/;
 const CODE = /^[A-Za-z0-9]{4,16}$/;
 
-/// Strict parse of a pairing-code expiry: Unix seconds (number or numeric string) or an ISO date. Returns ms.
+/// Strict parse of a pairing-code expiry: Unix seconds or milliseconds (number or numeric string; 12 digits or
+/// more, that is 1e11 and above, are milliseconds) or an ISO date. Returns ms.
 export function parseExpiry(value) {
   if (value === undefined || value === null) return null;
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value * 1000;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value >= 1e11 ? value : value * 1000;
   if (typeof value === "string") {
     if (/^\d{9,11}$/.test(value)) return Number(value) * 1000;
+    if (/^\d{12,14}$/.test(value)) return Number(value);
     const t = Date.parse(value);
     if (Number.isFinite(t) && /\d{4}-\d{2}-\d{2}/.test(value)) return t;
   }
@@ -200,6 +202,10 @@ function selftest() {
     validatePairing({ ...good, expiresAt: "not-a-timestamp" }, expect, now).length === 1,
     validatePairing({ ...good, expiresAt: String(1_799_999_999) }, expect, now).length === 1,
     validatePairing({ ...good, expiresAt: 1_800_000_300 }, expect, now).length === 0,
+    validatePairing({ ...good, expiresAt: 1_799_999_000_000 }, expect, now).length === 1, // milliseconds, in the past
+    validatePairing({ ...good, expiresAt: 1_800_000_300_000 }, expect, now).length === 0, // milliseconds, ahead
+    validatePairing({ ...good, expiresAt: "1799999000000" }, expect, now).length === 1, // millisecond string, in the past
+    expiryProblems({ ...goodArtifact, codeExpiresAt: 1_799_999_000_000 }, 1_800_000_000).length === 1,
     validatePairing({ ...good, expiresAt: "2027-02-01T00:00:00Z" }, expect, now).length === 0,
     buildMessage(good, expect, 1_800_000_600).deviceKey === "0x" + "aa".repeat(32),
     buildMessage(good, expect, 1_800_000_600).expiresAt === 1_800_000_600,

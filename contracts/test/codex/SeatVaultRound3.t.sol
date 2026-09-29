@@ -110,16 +110,17 @@ contract SeatVaultRound3 is Test {
         assertEq(registry.ownerOf(1), owner);
     }
 
-    function test_registryCalldataCanAuthorizeAnAgentNFTTransfer() public {
+    function test_registryCalldataCannotAuthorizeAnAgentNFTTransfer() public {
         _deposit();
         _approveAndRegister();
         address delegate = makeAddr("round3-agent-delegate");
         vm.prank(owner);
+        vm.expectRevert(SeatVault.NotARegistration.selector); // only the three register selectors go through
         vault.registerAgent(abi.encodeCall(IERC721.setApprovalForAll, (delegate, true)));
         vm.prank(delegate);
+        vm.expectRevert();
         registry.transferFrom(address(vault), delegate, 1);
-        assertEq(registry.ownerOf(1), delegate);
-        assertEq(seats.ownerOf(TOKEN), address(vault), "registry approval did not approve the seat collection");
+        assertEq(registry.ownerOf(1), address(vault));
     }
 
     function test_artifactSchemaAcceptanceCannotReplaceVaultPreflight() public {

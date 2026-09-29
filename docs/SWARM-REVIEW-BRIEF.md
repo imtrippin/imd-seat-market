@@ -27,7 +27,7 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 1. NFT custody under any sequence of deposit, plain transfer, `syncHeld`, `end`, `withdrawNFT`, `rescueERC721`, rejecting recipients, a second vault for the same token, repeated exit. Recovery must not call the reward token. Claims and immutable splits must survive NFT withdrawal and late arrivals to the old vault.
 2. ERC-1271 digest binding, replay boundaries (chain, relay, wallet, token, nonce), owner/operator/provider roles, expiry edges, revocation, device changes and chain changes. Separate signature approval from terminating an already enrolled remote device.
 3. Reward accounting: settle-by-balance-difference, rounding, exact-amount claims, reentrancy and callbacks, supported-token assumptions, shortfall behaviour, arbitrary incoming tokens, several tokens at once, claims after exit.
-4. `registerAgent` and `rescueERC721`: what an owner-only any-calldata facility to the pinned upgradeable registry can do, and whether a selector allowlist would be better despite the upgradeable proxy; consequences of rescuing the agent NFT.
+4. `registerAgent` (limited to the registry's three `register` selectors; fails closed if the upgradeable implementation changes its ABI) and `rescueERC721`: what the owner can still do through them, consequences of rescuing the agent NFT, and whether a registration fee in ETH could ever be required.
 5. Pairing artifact validation and stale approval or custody risks; at-most-once transaction handling, nonce and receipt failures and restart reconciliation in the rehearsal script; stopping safely on ambiguous results. Run only the offline suites: they sign with their public fixture key and never broadcast. Do not run deployment, live pairing, the walkthrough itself, or anything with a real credential or an RPC.
 6. The consequences of the unverified IMD behaviour below: state what can and cannot be made enforceable with this design, including the owner-withdraws-before-payout case.
 7. Gaps in unit, fuzz, sequence-fuzz and invariant coverage. Add local reproductions if useful and say which are failing tests and which are witnesses of an intentional limitation.
@@ -39,6 +39,8 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 - Rewards arriving at an ended vault still use its old split. Rewards routed elsewhere are outside its control. Withdrawing just before a payout may bypass the old vault only if IMD routes to the later holder; that routing has not been established. Nothing compensates the host for that or for an idle seat.
 - `end()` in the vault does not disconnect an existing remote worker; moving the NFT out is what makes the device stale on IMD's side, on IMD's timing.
 - The pairing helper's schema validation is not an on-chain preflight. The CLI does not verify current custody, approved digest, deployed terms or operator configuration through RPC before signing; those remain manual prerequisites to any later live use.
+- The provider can `end()` only once the seat is in the vault; the owner can always end. A claim pays what the vault holds when an unsupported token's balance fell outside transfers, and keeps the remainder allocated.
+- No role rotation: a lost owner key strands the seat; a compromised provider key can end the agreement and claim the provider's allocation, nothing more.
 - Vault creation costs about 2.1 million gas on the seat's chain; a clone factory is a known follow-up, not part of this snapshot.
 - Review counts and historical mock-testnet success do not prove safety.
 
@@ -60,7 +62,7 @@ From `contracts/`: `forge build`, `forge test`, `forge test --gas-report`, `forg
 
 From the repository root: `node --test test/pair-vault.test.mjs test/codex/vault-round3.test.mjs` and `node contracts/script/pair-vault.mjs --selftest`.
 
-Expected on the reviewed commit: the Foundry suites in `contracts/test/` (the count is printed by CI) and 26 Node script tests. Report actual results and skips rather than assuming these counts.
+Expected on the reviewed commit: 59 Foundry tests across 6 suites (including one handler-driven invariant suite) and 26 Node script tests. Report actual results and skips rather than assuming these counts.
 
 ## Finding format and deliverables
 
