@@ -18,8 +18,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// What it does not do: judge service,
 /// attribute rewards to jobs or periods, tell a misdirected transfer from a reward (every positive balance change
 /// of a token is shared), or revoke a device that IMD already enrolled (moving the NFT out is what makes that
-/// device stale on IMD's side). There is no fee and no collateral: the contract never accepts deposits, it only
-/// splits what arrives.
+/// device stale on IMD's side). There is no fee and no collateral deposit: `deposit()` moves the seat NFT in, and
+/// any ERC-20 that arrives at this address is split.
 ///
 /// Pairing authority. IMD pairs a device to a seat by verifying an EIP-712 `WorkerAuthorization` signature from
 /// the seat holder; for a contract holder it calls `isValidSignature(digest, signature)` (ERC-1271). This vault

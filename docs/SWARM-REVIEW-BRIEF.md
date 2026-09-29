@@ -28,7 +28,7 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 2. ERC-1271 digest binding, replay boundaries (chain, relay, wallet, token, nonce), owner/operator/provider roles, expiry edges, revocation, device changes and chain changes. Separate signature approval from terminating an already enrolled remote device.
 3. Reward accounting: settle-by-balance-difference, rounding, exact-amount claims, reentrancy and callbacks, supported-token assumptions, shortfall behaviour, arbitrary incoming tokens, several tokens at once, claims after exit.
 4. `registerAgent` and `rescueERC721`: what an owner-only any-calldata facility to the pinned upgradeable registry can do, and whether a selector allowlist would be better despite the upgradeable proxy; consequences of rescuing the agent NFT.
-5. Pairing artifact validation and stale approval or custody risks; at-most-once transaction handling, nonce and receipt failures and restart reconciliation in the rehearsal script; stopping safely on ambiguous results. Do not run deployment, signing, live pairing or the walkthrough itself.
+5. Pairing artifact validation and stale approval or custody risks; at-most-once transaction handling, nonce and receipt failures and restart reconciliation in the rehearsal script; stopping safely on ambiguous results. Run only the offline suites: they sign with their public fixture key and never broadcast. Do not run deployment, live pairing, the walkthrough itself, or anything with a real credential or an RPC.
 6. The consequences of the unverified IMD behaviour below: state what can and cannot be made enforceable with this design, including the owner-withdraws-before-payout case.
 7. Gaps in unit, fuzz, sequence-fuzz and invariant coverage. Add local reproductions if useful and say which are failing tests and which are witnesses of an intentional limitation.
 
@@ -66,7 +66,7 @@ Expected on the reviewed commit: the Foundry suites in `contracts/test/` (the co
 
 Every concrete finding must include: severity (blocker, high, medium, low); category (demonstrated bug, design choice, production prerequisite); the exact file and function; a reproducible action sequence or a failing test; impact; a suggested fix. Separate hypothetical consequences of unknown IMD behaviour from reproduced code defects. Several reviews agreeing is not proof of safety.
 
-Deliver a Markdown report and a machine-readable findings list (JSON) with the fields above, the commit reviewed, and the commands run with their output.
+Deliver the findings in the review worker's native structured format (with the fields above mapped onto it) plus a concise Markdown summary that states the commit reviewed and the commands run with their output. No git bundle or published file is required.
 
 ## Out of scope
 

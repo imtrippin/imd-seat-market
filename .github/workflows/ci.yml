@@ -44,5 +44,5 @@ jobs:
         run: forge fmt --check src test script
       - name: Build
         run: forge build
-      - name: Unit, fuzz and invariant tests
+      - name: Unit and fuzz tests
         run: forge test
