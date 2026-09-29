@@ -4,7 +4,7 @@ pragma solidity 0.8.30;
 // Adopted from the IMD swarm review of commit a51f9130 (job 11c42a8c, 2026-09-29): its reproductions became
 // regressions once the findings were fixed; the coverage gaps it listed are the unit cases below.
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {SeatVault, SeatVaultFactory} from "../src/SeatVault.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
@@ -66,22 +66,56 @@ contract SeatVaultSwarmProbes is Test {
         vm.stopPrank();
     }
 
-    // ------------------------------------------------------------ F1: the collection and the registry are never a reward
+    // ------------------------------------------------------------ F1: only the pinned reward token is ever split
 
-    function test_settleAndClaimRefuseTheSeatCollectionAndTheRegistry() public {
+    function test_onlyTheRewardTokenIsSplitOtherTokensAreTheOwnersToRescue() public {
         _deposit(vault);
-        vm.expectRevert(SeatVault.UnsupportedToken.selector);
-        vault.settle(IERC20(address(seats)));
+        MockERC20 other = new MockERC20();
+        other.mint(address(vault), 1000);
+        reward.mint(address(vault), 100);
+        vault.settle();
+        assertEq(vault.accounted(), 100, "only the reward token is settled");
         vm.prank(provider);
+        assertEq(vault.claim(), 30);
+        assertEq(other.balanceOf(provider), 0);
+        vm.prank(provider);
+        vm.expectRevert(SeatVault.NotOwner.selector);
+        vault.rescueERC20(IERC20(address(other)), provider);
+        vm.startPrank(owner);
         vm.expectRevert(SeatVault.UnsupportedToken.selector);
-        vault.claim(IERC20(address(seats)));
+        vault.rescueERC20(reward, owner); // rewards leave only through claim
         vm.expectRevert(SeatVault.UnsupportedToken.selector);
-        vault.settle(IERC20(address(registry)));
-        assertEq(vault.accounted(IERC20(address(seats))), 0, "no ledger entry for the collection");
+        vault.rescueERC20(IERC20(address(seats)), owner); // the seat collection is never a rescueERC20 target
+        vm.expectRevert(SeatVault.UnsupportedToken.selector);
+        vault.rescueERC20(IERC20(address(registry)), owner);
+        vm.expectRevert(SeatVault.ZeroAddress.selector);
+        vault.rescueERC20(IERC20(address(other)), address(0));
+        vault.rescueERC20(IERC20(address(other)), owner);
+        vm.stopPrank();
+        assertEq(other.balanceOf(owner), 1000);
+        assertEq(vault.claimable(owner), 70, "the reward ledger is untouched by the rescue");
         assertEq(seats.ownerOf(1), address(vault));
     }
 
-    function test_legacyTransferCollectionCannotBeClaimedAsAReward() public {
+    function test_aStrayLegacyTransferNftCanOnlyLeaveThroughTheOwnersRescue() public {
+        _deposit(vault);
+        LegacyTransferCollection legacy = new LegacyTransferCollection();
+        legacy.mint(address(vault), 1); // a stray token of another collection lands in the vault
+        vm.startPrank(provider);
+        vm.expectRevert(SeatVault.NothingToClaim.selector);
+        vault.claim(); // the third swarm review: claim used to accept the stray as `token` and move id 1
+        vm.expectRevert(SeatVault.NotOwner.selector);
+        vault.rescueERC721(IERC721(address(legacy)), 1, provider);
+        vm.expectRevert(SeatVault.NotOwner.selector);
+        vault.rescueERC20(IERC20(address(legacy)), provider);
+        vm.stopPrank();
+        assertEq(legacy.ownerOf(1), address(vault), "the stray stays until the owner rescues it");
+        vm.prank(owner);
+        vault.rescueERC721(IERC721(address(legacy)), 1, owner);
+        assertEq(legacy.ownerOf(1), owner);
+    }
+
+    function test_aLegacyTransferSeatCollectionIsNeverARescueTarget() public {
         LegacyTransferCollection legacy = new LegacyTransferCollection();
         legacy.mint(owner, 1);
         SeatVault v = new SeatVault(
@@ -99,10 +133,9 @@ contract SeatVaultSwarmProbes is Test {
         vm.startPrank(owner);
         legacy.approve(address(v), 1);
         v.deposit();
+        vm.expectRevert(SeatVault.UnsupportedToken.selector); // would move seat id 1 with the bookkeeping intact
+        v.rescueERC20(IERC20(address(legacy)), owner);
         vm.stopPrank();
-        vm.prank(provider);
-        vm.expectRevert(SeatVault.UnsupportedToken.selector); // before the fix this moved seat id 1 to the provider
-        v.claim(IERC20(address(legacy)));
         assertEq(legacy.ownerOf(1), address(v));
     }
 
@@ -151,25 +184,81 @@ contract SeatVaultSwarmProbes is Test {
         assertTrue(fresh.ended());
     }
 
+    function test_providerCannotEndAPlainTransferredSeatUntilTheOwnerRecordsIt() public {
+        vm.prank(owner);
+        seats.transferFrom(owner, address(vault), 1); // the other supported deposit path: no callback, held stays false
+        vm.prank(provider);
+        vm.expectRevert(SeatVault.NotHeld.selector); // the third swarm review: this used to close the vault before it started
+        vault.end();
+        vm.prank(owner);
+        vault.syncHeld();
+        vm.prank(owner);
+        vault.approvePairing(keccak256("n"), uint64(vm.getBlockTimestamp() + 600), RELAY);
+        vm.prank(provider);
+        vault.end(); // once recorded, the provider may end as before
+        assertTrue(vault.ended());
+        vm.prank(owner);
+        vault.withdrawNFT(owner);
+        assertEq(seats.ownerOf(1), owner);
+    }
+
+    // ------------------------------------------------------------ F3: replacing an approval announces the old one as cleared
+
+    function test_replacingAnApprovalEmitsPairingClearedForTheOldDigest() public {
+        _deposit(vault);
+        uint64 until = uint64(vm.getBlockTimestamp() + 600);
+        vm.prank(owner);
+        bytes32 first = vault.approvePairing(keccak256("a"), until, RELAY);
+        vm.recordLogs();
+        vm.prank(owner);
+        bytes32 second = vault.approvePairing(keccak256("b"), until, RELAY);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 2, "PairingCleared(old) then PairingApproved(new)");
+        assertEq(logs[0].topics[0], keccak256("PairingCleared(bytes32)"));
+        assertEq(logs[0].topics[1], first);
+        assertEq(logs[1].topics[0], keccak256("PairingApproved(bytes32,bytes32,bytes32,uint64)"));
+        assertEq(logs[1].topics[1], second);
+        assertEq(vault.approvedDigest(), second);
+        // a first approval announces nothing to clear
+        SeatVault fresh = new SeatVault(
+            owner,
+            provider,
+            vm.addr(OPERATOR_KEY),
+            seats,
+            2,
+            reward,
+            3000,
+            keccak256("swarm-device"),
+            address(registry),
+            RELAY
+        );
+        seats.mint(owner, 2);
+        _deposit(fresh);
+        vm.recordLogs();
+        vm.prank(owner);
+        fresh.approvePairing(keccak256("c"), until, RELAY);
+        assertEq(vm.getRecordedLogs().length, 1);
+    }
+
     // ------------------------------------------------------------ F4: a claim pays what is there, the rest stays allocated
 
     function test_claimUnderAShortfallPaysWhatIsThereAndKeepsTheRest() public {
         _deposit(vault);
         reward.mint(address(vault), 100);
-        vault.settle(reward);
+        vault.settle();
         vm.prank(address(vault));
         reward.transfer(address(0xdead), 50); // stands in for a balance that shrank outside the vault's control
         vm.prank(provider);
-        assertEq(vault.claim(reward), 30);
+        assertEq(vault.claim(), 30);
         vm.prank(owner);
-        assertEq(vault.claim(reward), 20, "the owner takes the 20 that remain");
-        assertEq(vault.claimable(reward, owner), 50);
-        assertEq(vault.accounted(reward), 50);
-        assertEq(vault.shortfall(reward), 50);
+        assertEq(vault.claim(), 20, "the owner takes the 20 that remain");
+        assertEq(vault.claimable(owner), 50);
+        assertEq(vault.accounted(), 50);
+        assertEq(vault.shortfall(), 50);
         reward.mint(address(vault), 50); // a top-up restores the balance: nothing new is split, the old allocation is paid
         vm.prank(owner);
-        assertEq(vault.claim(reward), 50);
-        assertEq(vault.claimable(reward, owner), 0);
+        assertEq(vault.claim(), 50);
+        assertEq(vault.claimable(owner), 0);
         assertEq(reward.balanceOf(address(vault)), 0);
     }
 

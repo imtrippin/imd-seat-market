@@ -146,13 +146,13 @@ expect "isValidSignature(wrong key)" "$(call "$VAULT" "isValidSignature(bytes32,
 
 say "4. a payout arrives: the owner key plays the Disperse contract and sends 100 mock IMD to the vault"
 send "$OWNER_KEY" "$IMD" "transfer(address,uint256)" "$VAULT" 100000000000000000000
-expect "pending" "$(call "$VAULT" "pending(address)(uint256)" "$IMD")" "100000000000000000000"
+expect "pending" "$(call "$VAULT" "pending()(uint256)")" "100000000000000000000"
 
 say "5. provider claims (settles first), then owner claims"
-send "$PROVIDER_KEY" "$VAULT" "claim(address)" "$IMD"
+send "$PROVIDER_KEY" "$VAULT" "claim()"
 expect "provider received" "$(minus "$(call "$IMD" "balanceOf(address)(uint256)" "$PROVIDER")" "$PROVIDER_BEFORE")" "30000000000000000000"
-expect "owner claimable" "$(call "$VAULT" "claimable(address,address)(uint256)" "$IMD" "$OWNER")" "70000000000000000000"
-send "$OWNER_KEY" "$VAULT" "claim(address)" "$IMD"
+expect "owner claimable" "$(call "$VAULT" "claimable(address)(uint256)" "$OWNER")" "70000000000000000000"
+send "$OWNER_KEY" "$VAULT" "claim()"
 expect "vault balance" "$(call "$IMD" "balanceOf(address)(uint256)" "$VAULT")" "0"
 
 say "6. owner takes the NFT back without the provider; pairing approval dies with it"

@@ -113,9 +113,9 @@ contract MainnetFork is Test {
         deal(address(IMD), address(vault), 100e18);
         uint256 holderBefore = IMD.balanceOf(holder);
         vm.prank(provider);
-        assertEq(vault.claim(IMD), 30e18);
+        assertEq(vault.claim(), 30e18);
         vm.prank(holder);
-        assertEq(vault.claim(IMD), 70e18);
+        assertEq(vault.claim(), 70e18);
         assertEq(IMD.balanceOf(holder) - holderBefore, 70e18);
         // exit: the seat comes back and control of the agent follows it, with no rescue needed
         vm.prank(holder);
@@ -154,11 +154,14 @@ contract MainnetFork is Test {
         vault.withdrawNFT(provider);
         vm.expectRevert(SeatVault.NotOwner.selector);
         vault.rescueERC721(SEATS, seat, provider);
-        vm.expectRevert(SeatVault.UnsupportedToken.selector);
-        vault.claim(IERC20(address(SEATS)));
+        vm.expectRevert(SeatVault.NotOwner.selector);
+        vault.rescueERC20(IERC20(address(SEATS)), provider);
         vm.expectRevert();
         SEATS.transferFrom(address(vault), provider, seat);
         vm.stopPrank();
+        vm.prank(holder);
+        vm.expectRevert(SeatVault.UnsupportedToken.selector);
+        vault.rescueERC20(IERC20(address(SEATS)), holder); // not even the owner can move the seat this way
         assertEq(SEATS.ownerOf(seat), address(vault));
     }
 }

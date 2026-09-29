@@ -15,11 +15,11 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// @notice Experimental, local prototype. What this vault enforces: the split of every reward-token transfer that
 /// actually reaches it, and the owner's right to take the NFT back without the provider, at any time, even after
 /// the agreement ended, even if the NFT arrived by a plain transfer, and without any call to the reward token.
-/// What it does not do: judge service,
-/// attribute rewards to jobs or periods, tell a misdirected transfer from a reward (every positive balance change
-/// of a token is shared), or revoke a device that IMD already enrolled (moving the NFT out is what makes that
-/// device stale on IMD's side). There is no fee and no collateral deposit: `deposit()` moves the seat NFT in, and
-/// any ERC-20 that arrives at this address is split.
+/// What it does not do: judge service, attribute rewards to jobs or periods, tell a misdirected transfer of the
+/// reward token from a reward (every positive balance change of it is shared), or revoke a device that IMD already
+/// enrolled (moving the NFT out is what makes that device stale on IMD's side). There is no fee and no collateral
+/// deposit: `deposit()` moves the seat NFT in. Only the pinned reward token is ever settled or claimed; anything
+/// else that lands here (another collection's NFT, another ERC-20) is the owner's to take back.
 ///
 /// Pairing authority. IMD pairs a device to a seat by verifying an EIP-712 `WorkerAuthorization` signature from
 /// the seat holder; for a contract holder it calls `isValidSignature(digest, signature)` (ERC-1271). This vault
@@ -68,18 +68,18 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     bytes32 public approvedDigest;
     uint64 public approvedUntil;
     uint256 public approvedChain;
-    /// @dev Per token: balance already allocated to the two parties (still inside the vault until claimed).
-    mapping(IERC20 => uint256) public accounted;
-    mapping(IERC20 => mapping(address => uint256)) public claimable;
+    /// @dev Reward-token balance already allocated to the two parties (still inside the vault until claimed).
+    uint256 public accounted;
+    mapping(address => uint256) public claimable;
 
     event NFTDeposited(address indexed from);
+    event NFTSynced();
     event NFTWithdrawn(address indexed to);
-    event OtherNFTReceived(address indexed other, uint256 indexed id, address indexed from);
     event DeviceKeySet(bytes32 deviceKey);
     event PairingApproved(bytes32 indexed digest, bytes32 deviceKey, bytes32 nonce, uint64 expiresAt);
     event PairingCleared(bytes32 indexed digest);
-    event Settled(IERC20 indexed token, uint256 received, uint256 ownerShare, uint256 providerShare);
-    event Claimed(IERC20 indexed token, address indexed party, uint256 amount);
+    event Settled(uint256 received, uint256 ownerShare, uint256 providerShare);
+    event Claimed(address indexed party, uint256 amount);
     event Ended(address indexed by, uint64 endedAt);
     event AgentRegistered(uint256 indexed agentId, bytes data);
 
@@ -141,12 +141,11 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice The seat NFT is accepted only from the owner, only once, only before exit. Any other collection's
-    /// token is accepted and can be rescued by the owner later (another collection may safe-mint one here).
+    /// token is accepted and can be rescued by the owner later (another collection may safe-mint one here); no
+    /// event is emitted for it, since anyone could call this hook directly and the collection's own logs are the
+    /// record.
     function onERC721Received(address, address from, uint256 id, bytes calldata) external returns (bytes4) {
-        if (msg.sender != address(collection)) {
-            emit OtherNFTReceived(msg.sender, id, from);
-            return IERC721Receiver.onERC721Received.selector;
-        }
+        if (msg.sender != address(collection)) return IERC721Receiver.onERC721Received.selector;
         if (id != tokenId) revert WrongToken();
         if (from != owner) revert NotOwner();
         if (held) revert AlreadyHeld();
@@ -164,7 +163,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         if (held) revert AlreadyHeld();
         if (collection.ownerOf(tokenId) != address(this)) revert NotHeld();
         held = true;
-        emit NFTDeposited(owner);
+        emit NFTSynced();
     }
 
     /// @notice The owner takes the seat back whenever this vault actually holds it: before or after the agreement
@@ -184,11 +183,12 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice Either party ends the agreement: no new pairing can be approved or validated. The NFT stays until
-    /// the owner withdraws it; allocations stay claimable. The provider can end only once the seat is in the
-    /// vault, so it cannot kill a fresh vault before the owner deposits.
+    /// the owner withdraws it; allocations stay claimable. The provider can end only once the seat is recorded as
+    /// held (after `deposit()` or `syncHeld()`), so it cannot kill a vault before the owner has started it, on
+    /// either deposit path.
     function end() external {
         if (msg.sender != owner && msg.sender != provider) revert NotParty();
-        if (msg.sender == provider && collection.ownerOf(tokenId) != address(this)) revert NotHeld();
+        if (msg.sender == provider && !held) revert NotHeld();
         if (ended) revert AlreadyEnded();
         _end();
         _clearApproval();
@@ -220,6 +220,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         if (keccak256(bytes(relayOrigin_)) != relayOriginHash) revert WrongRelay();
         if (expiresAt <= block.timestamp || expiresAt > block.timestamp + MAX_PAIRING_WINDOW) revert BadExpiry();
         digest = workerAuthorizationDigest(deviceKey, nonce, expiresAt);
+        _clearApproval(); // the replaced approval is announced as cleared, like every other path that drops one
         approvedDigest = digest;
         approvedUntil = expiresAt;
         approvedChain = block.chainid;
@@ -285,48 +286,46 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         (bool ok, bytes memory result) = registrar.call(data);
         if (!ok || result.length != 32) revert RegistryCallFailed();
         agentId = abi.decode(result, (uint256));
+        if (agentId == 0) revert RegistryCallFailed(); // ERC-8004 agent ids start at 1; a zero word is no registration
         emit AgentRegistered(agentId, data);
     }
 
     // ---------------------------------------------------------------- rewards
 
-    /// @notice Allocates every token unit that arrived since the last settlement, whatever its source: the owner
-    /// gets the floor of its share, the provider the remainder, rounding once per settlement. Anyone may call it;
-    /// claims call it first.
-    function settle(IERC20 token) external nonReentrant {
-        _rejectNonRewards(token);
-        _settle(token, token.balanceOf(address(this)));
+    /// @notice Allocates every unit of the reward token that arrived since the last settlement, whatever its
+    /// source: the owner gets the floor of its share, the provider the remainder, rounding once per settlement.
+    /// Anyone may call it; claims call it first.
+    function settle() external nonReentrant {
+        _settle(rewardToken.balanceOf(address(this)));
     }
 
-    /// @notice A party takes its allocation of `token`. Rewards that arrived but were not yet settled are settled
-    /// first, so nothing can be claimed past an incoming transfer. If the token's balance fell outside transfers
+    /// @notice A party takes its allocation of the reward token. Rewards that arrived but were not yet settled are
+    /// settled first, so nothing can be claimed past an incoming transfer. If the balance fell outside transfers
     /// (an unsupported asset), the claim pays what is there and keeps the rest allocated.
-    function claim(IERC20 token) external nonReentrant returns (uint256 amount) {
+    function claim() external nonReentrant returns (uint256 amount) {
         if (msg.sender != owner && msg.sender != provider) revert NotParty();
-        _rejectNonRewards(token);
-        uint256 balance = token.balanceOf(address(this));
-        _settle(token, balance);
-        amount = claimable[token][msg.sender];
+        uint256 balance = rewardToken.balanceOf(address(this));
+        _settle(balance);
+        amount = claimable[msg.sender];
         if (amount > balance) amount = balance;
         if (amount == 0) revert NothingToClaim();
-        claimable[token][msg.sender] -= amount;
-        accounted[token] -= amount;
-        _pushExact(token, msg.sender, amount);
-        emit Claimed(token, msg.sender, amount);
+        claimable[msg.sender] -= amount;
+        accounted -= amount;
+        _pushExact(msg.sender, amount);
+        emit Claimed(msg.sender, amount);
     }
 
-    /// @notice Unsettled balance of a token: what the next settlement would split.
-    function pending(IERC20 token) external view returns (uint256) {
-        uint256 balance = token.balanceOf(address(this));
-        uint256 known = accounted[token];
-        return balance > known ? balance - known : 0;
+    /// @notice Unsettled reward-token balance: what the next settlement would split.
+    function pending() external view returns (uint256) {
+        uint256 balance = rewardToken.balanceOf(address(this));
+        return balance > accounted ? balance - accounted : 0;
     }
 
-    /// @notice How far a token's actual balance falls short of what is allocated (0 for a well-behaved token).
-    function shortfall(IERC20 token) external view returns (uint256) {
-        uint256 balance = token.balanceOf(address(this));
-        uint256 known = accounted[token];
-        return known > balance ? known - balance : 0;
+    /// @notice How far the reward token's actual balance falls short of what is allocated (0 for a well-behaved
+    /// token).
+    function shortfall() external view returns (uint256) {
+        uint256 balance = rewardToken.balanceOf(address(this));
+        return accounted > balance ? accounted - balance : 0;
     }
 
     /// @notice Moves an NFT that is not the seat (another collection's token, or a mistake) to `to`. The reward token
@@ -337,6 +336,19 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         if (address(other) == address(collection) && id == tokenId) revert UseWithdraw();
         if (address(other) == address(rewardToken)) revert UnsupportedToken();
         other.safeTransferFrom(address(this), to, id);
+    }
+
+    /// @notice Moves the vault's whole balance of an ERC-20 that is not the reward token to `to`: such a token is
+    /// never split, so it is the owner's to take back. The seat collection and the registrar are refused as well
+    /// (an ERC-721 with a legacy `transfer(address,uint256)` would move a token by id).
+    function rescueERC20(IERC20 other, address to) external nonReentrant {
+        if (msg.sender != owner) revert NotOwner();
+        if (to == address(0)) revert ZeroAddress();
+        if (
+            address(other) == address(rewardToken) || address(other) == address(collection)
+                || address(other) == registrar
+        ) revert UnsupportedToken();
+        other.safeTransfer(to, other.balanceOf(address(this)));
     }
 
     // ---------------------------------------------------------------- internals
@@ -356,30 +368,25 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         approvedChain = 0;
     }
 
-    /// @dev The seat collection and the registrar are never reward tokens: an ERC-721 `balanceOf` is a token count,
-    /// and a collection with a legacy `transfer(address,uint256)` would move a seat on a claim.
-    function _rejectNonRewards(IERC20 token) internal view {
-        if (address(token) == address(collection) || address(token) == registrar) revert UnsupportedToken();
-    }
-
-    function _settle(IERC20 token, uint256 balance) internal {
-        uint256 known = accounted[token];
+    function _settle(uint256 balance) internal {
+        uint256 known = accounted;
         if (balance <= known) return;
         uint256 received = balance - known;
         uint256 ownerShare = Math.mulDiv(received, BPS - providerBps, BPS);
         uint256 providerShare = received - ownerShare;
-        claimable[token][owner] += ownerShare;
-        claimable[token][provider] += providerShare;
-        accounted[token] = balance;
-        emit Settled(token, received, ownerShare, providerShare);
+        claimable[owner] += ownerShare;
+        claimable[provider] += providerShare;
+        accounted = balance;
+        emit Settled(received, ownerShare, providerShare);
     }
 
-    /// @dev Sends exactly `amount`: the vault's balance must fall by it and the recipient's rise by it.
-    function _pushExact(IERC20 token, address to, uint256 amount) internal {
-        uint256 before = token.balanceOf(address(this));
-        uint256 toBefore = token.balanceOf(to);
-        token.safeTransfer(to, amount);
-        if (before - token.balanceOf(address(this)) != amount || token.balanceOf(to) - toBefore != amount) {
+    /// @dev Sends exactly `amount` of the reward token: the vault's balance must fall by it and the recipient's rise
+    /// by it.
+    function _pushExact(address to, uint256 amount) internal {
+        uint256 before = rewardToken.balanceOf(address(this));
+        uint256 toBefore = rewardToken.balanceOf(to);
+        rewardToken.safeTransfer(to, amount);
+        if (before - rewardToken.balanceOf(address(this)) != amount || rewardToken.balanceOf(to) - toBefore != amount) {
             revert UnsupportedToken();
         }
     }

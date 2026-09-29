@@ -95,6 +95,11 @@ contract SeatVaultReviewProbes is Test {
         vm.prank(owner);
         seats.transferFrom(owner, address(vault), TOKEN);
         vm.prank(provider);
+        vm.expectRevert(SeatVault.NotHeld.selector); // not recorded yet: the provider cannot close it (third swarm review)
+        vault.end();
+        vm.prank(owner);
+        vault.syncHeld();
+        vm.prank(provider);
         vault.end();
         assertEq(seats.ownerOf(TOKEN), address(vault));
         vm.startPrank(owner);
@@ -137,9 +142,9 @@ contract SeatVaultReviewProbes is Test {
         vm.prank(owner);
         vault.withdrawNFT(owner);
         assertEq(seats.ownerOf(TOKEN), owner);
-        vault.settle(reward);
-        assertEq(vault.accounted(reward), amount, "full-precision split settles the whole balance");
-        assertEq(vault.claimable(reward, owner) + vault.claimable(reward, provider), amount);
+        vault.settle();
+        assertEq(vault.accounted(), amount, "full-precision split settles the whole balance");
+        assertEq(vault.claimable(owner) + vault.claimable(provider), amount);
     }
 
     // ------------------------------------------------------------ F3 one active approval
@@ -222,13 +227,13 @@ contract SeatVaultReviewProbes is Test {
         vault.withdrawNFT(address(rejector));
         assertTrue(vault.held());
         assertFalse(vault.ended());
-        assertEq(vault.accounted(reward), 0, "withdrawal never settles");
+        assertEq(vault.accounted(), 0, "withdrawal never settles");
         assertEq(seats.ownerOf(TOKEN), address(vault));
         vm.prank(owner);
         vault.withdrawNFT(owner);
         assertEq(seats.ownerOf(TOKEN), owner);
-        vault.settle(reward);
-        assertEq(vault.claimable(reward, provider), 30);
+        vault.settle();
+        assertEq(vault.claimable(provider), 30);
     }
 
     function test_sameDigestCanValidateRepeatedlyUntilRevoked() public {
@@ -274,24 +279,24 @@ contract SeatVaultReviewProbes is Test {
     function test_roundingDependsOnSettlementPartitions() public {
         SeatVault batched = _newVault(reward, address(registry), 2049);
         reward.mint(address(batched), 10);
-        batched.settle(reward);
+        batched.settle();
         for (uint256 i; i < 10; ++i) {
             reward.mint(address(vault), 1);
-            vault.settle(reward);
+            vault.settle();
         }
-        assertEq(batched.claimable(reward, owner), 7);
-        assertEq(batched.claimable(reward, provider), 3);
-        assertEq(vault.claimable(reward, owner), 0);
-        assertEq(vault.claimable(reward, provider), 10);
+        assertEq(batched.claimable(owner), 7);
+        assertEq(batched.claimable(provider), 3);
+        assertEq(vault.claimable(owner), 0);
+        assertEq(vault.claimable(provider), 10);
     }
 
     function test_shortfallIsVisibleWhenATokenShrinks() public {
         _deposit();
         reward.mint(address(vault), 100);
-        vault.settle(reward);
+        vault.settle();
         vm.prank(address(vault));
         reward.transfer(address(0xdead), 40); // stands in for a balance that shrank outside the vault's control
-        assertEq(vault.shortfall(reward), 40);
-        assertEq(vault.pending(reward), 0);
+        assertEq(vault.shortfall(), 40);
+        assertEq(vault.pending(), 0);
     }
 }

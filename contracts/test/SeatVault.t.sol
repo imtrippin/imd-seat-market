@@ -339,31 +339,31 @@ contract SeatVaultTest is Test {
     function test_rewardsSplitByImmutableTermsWithRemainderToProvider() public {
         _deposit();
         _reward(100e18);
-        assertEq(vault.pending(IERC20(address(imd))), 100e18);
-        vault.settle(IERC20(address(imd)));
-        assertEq(vault.claimable(IERC20(address(imd)), owner), 70e18);
-        assertEq(vault.claimable(IERC20(address(imd)), provider), 30e18);
-        assertEq(vault.pending(IERC20(address(imd))), 0);
+        assertEq(vault.pending(), 100e18);
+        vault.settle();
+        assertEq(vault.claimable(owner), 70e18);
+        assertEq(vault.claimable(provider), 30e18);
+        assertEq(vault.pending(), 0);
         _reward(1);
-        vault.settle(IERC20(address(imd)));
-        assertEq(vault.claimable(IERC20(address(imd)), owner), 70e18, "one unit rounds to the provider");
-        assertEq(vault.claimable(IERC20(address(imd)), provider), 30e18 + 1);
+        vault.settle();
+        assertEq(vault.claimable(owner), 70e18, "one unit rounds to the provider");
+        assertEq(vault.claimable(provider), 30e18 + 1);
         _reward(3);
-        vault.settle(IERC20(address(imd)));
-        assertEq(vault.claimable(IERC20(address(imd)), owner), 70e18 + 2);
-        assertEq(vault.claimable(IERC20(address(imd)), provider), 30e18 + 2);
+        vault.settle();
+        assertEq(vault.claimable(owner), 70e18 + 2);
+        assertEq(vault.claimable(provider), 30e18 + 2);
     }
 
     function test_repeatedSettlementNeverDoubleCounts() public {
         _deposit();
         _reward(50e18);
-        vault.settle(IERC20(address(imd)));
-        vault.settle(IERC20(address(imd)));
+        vault.settle();
+        vault.settle();
         vm.prank(stranger);
-        vault.settle(IERC20(address(imd)));
-        assertEq(vault.claimable(IERC20(address(imd)), owner), 35e18);
-        assertEq(vault.claimable(IERC20(address(imd)), provider), 15e18);
-        assertEq(vault.accounted(IERC20(address(imd))), 50e18);
+        vault.settle();
+        assertEq(vault.claimable(owner), 35e18);
+        assertEq(vault.claimable(provider), 15e18);
+        assertEq(vault.accounted(), 50e18);
     }
 
     function test_claimOrderingAndNoSweeping() public {
@@ -371,22 +371,22 @@ contract SeatVaultTest is Test {
         _reward(100e18);
         // the provider claims before anyone settled: the claim settles first
         vm.prank(provider);
-        assertEq(vault.claim(IERC20(address(imd))), 30e18);
+        assertEq(vault.claim(), 30e18);
         assertEq(imd.balanceOf(provider), 30e18);
-        assertEq(vault.claimable(IERC20(address(imd)), owner), 70e18, "the owner's allocation is untouched");
+        assertEq(vault.claimable(owner), 70e18, "the owner's allocation is untouched");
         // more rewards arrive before the owner claims
         _reward(10e18);
         vm.prank(owner);
-        assertEq(vault.claim(IERC20(address(imd))), 77e18);
-        assertEq(vault.claimable(IERC20(address(imd)), provider), 3e18);
+        assertEq(vault.claim(), 77e18);
+        assertEq(vault.claimable(provider), 3e18);
         vm.prank(owner);
         vm.expectRevert(SeatVault.NothingToClaim.selector);
-        vault.claim(IERC20(address(imd)));
+        vault.claim();
         vm.prank(stranger);
         vm.expectRevert(SeatVault.NotParty.selector);
-        vault.claim(IERC20(address(imd)));
+        vault.claim();
         assertEq(imd.balanceOf(address(vault)), 3e18, "exactly the provider's remaining allocation stays");
-        assertEq(vault.accounted(IERC20(address(imd))), 3e18);
+        assertEq(vault.accounted(), 3e18);
     }
 
     function test_rewardsBeforeWithdrawalAreAllocatedFirstAndLaterOnesGoToTheNewHolder() public {
@@ -394,31 +394,38 @@ contract SeatVaultTest is Test {
         _reward(100e18);
         vm.prank(owner);
         vault.withdrawNFT(owner); // ends, then moves the NFT; the reward token is not touched
-        assertEq(vault.pending(IERC20(address(imd))), 100e18, "what arrived before stays allocated to the same split");
-        vault.settle(IERC20(address(imd)));
-        assertEq(vault.claimable(IERC20(address(imd)), provider), 30e18);
-        assertEq(vault.claimable(IERC20(address(imd)), owner), 70e18);
+        assertEq(vault.pending(), 100e18, "what arrived before stays allocated to the same split");
+        vault.settle();
+        assertEq(vault.claimable(provider), 30e18);
+        assertEq(vault.claimable(owner), 70e18);
         vm.prank(provider);
-        assertEq(vault.claim(IERC20(address(imd))), 30e18, "the provider's allocation survives exit");
+        assertEq(vault.claim(), 30e18, "the provider's allocation survives exit");
         // the next payout goes to whoever holds the NFT now: the owner's wallet, not the vault
         imd.mint(owner, 100e18);
-        assertEq(vault.pending(IERC20(address(imd))), 0);
+        assertEq(vault.pending(), 0);
         // anything that still lands in the vault is split by the same terms, nothing gets stuck
         _reward(10e18);
         vm.prank(provider);
-        assertEq(vault.claim(IERC20(address(imd))), 3e18);
+        assertEq(vault.claim(), 3e18);
         vm.prank(owner);
-        assertEq(vault.claim(IERC20(address(imd))), 77e18);
+        assertEq(vault.claim(), 77e18);
     }
 
-    function test_anyOtherTokenLandingHereIsSplitTooNotStuck() public {
+    function test_anyOtherTokenLandingHereIsTheOwnersToRescueNotSplit() public {
         _deposit();
         MockERC20 projectToken = new MockERC20();
         projectToken.mint(address(vault), 1000);
+        assertEq(vault.pending(), 0, "another token is not a reward");
         vm.prank(provider);
-        assertEq(vault.claim(IERC20(address(projectToken))), 300);
+        vm.expectRevert(SeatVault.NothingToClaim.selector);
+        vault.claim();
+        vm.prank(provider);
+        vm.expectRevert(SeatVault.NotOwner.selector);
+        vault.rescueERC20(IERC20(address(projectToken)), provider);
         vm.prank(owner);
-        assertEq(vault.claim(IERC20(address(projectToken))), 700);
+        vault.rescueERC20(IERC20(address(projectToken)), owner);
+        assertEq(projectToken.balanceOf(owner), 1000);
+        assertEq(vault.accounted(), 0, "the reward ledger never saw it");
     }
 
     function test_twoVaultsAttributeSeparately() public {
@@ -435,8 +442,8 @@ contract SeatVaultTest is Test {
         _reward(100e18);
         imd.mint(address(second), 40e18);
         vm.startPrank(provider);
-        assertEq(vault.claim(IERC20(address(imd))), 30e18, "seat 2048 at 30%");
-        assertEq(second.claim(IERC20(address(imd))), 20e18, "seat 2049 at 50%");
+        assertEq(vault.claim(), 30e18, "seat 2048 at 30%");
+        assertEq(second.claim(), 20e18, "seat 2049 at 50%");
         vm.stopPrank();
         assertEq(vault.tokenId(), TOKEN);
         assertEq(second.tokenId(), 2049);
@@ -458,9 +465,9 @@ contract SeatVaultTest is Test {
         hooked.mint(address(v), 100e18);
         hooked.arm(v);
         vm.prank(provider);
-        assertEq(v.claim(IERC20(address(hooked))), 30e18);
+        assertEq(v.claim(), 30e18);
         assertEq(hooked.blocked(), 2, "claim and settle re-entries were both rejected by the guard");
-        assertEq(v.claimable(IERC20(address(hooked)), owner), 70e18);
+        assertEq(v.claimable(owner), 70e18);
     }
 
     function test_recipientTaxTokenCannotShortPayAClaim() public {
@@ -476,11 +483,11 @@ contract SeatVaultTest is Test {
         vm.stopPrank();
         taxed.setTaxedSender(address(v));
         taxed.mint(address(v), 100e18);
-        v.settle(IERC20(address(taxed)));
+        v.settle();
         vm.prank(provider);
         vm.expectRevert(SeatVault.UnsupportedToken.selector);
-        v.claim(IERC20(address(taxed)));
-        assertEq(v.claimable(IERC20(address(taxed)), provider), 30e18, "allocation intact, nothing left the vault");
+        v.claim();
+        assertEq(v.claimable(provider), 30e18, "allocation intact, nothing left the vault");
     }
 
     function test_shrinkingTokenDoesNotUnderflowButCanLeaveTheLastClaimantShort() public {
@@ -495,21 +502,19 @@ contract SeatVaultTest is Test {
         v.deposit();
         vm.stopPrank();
         shrinking.mint(address(v), 100e18);
-        v.settle(IERC20(address(shrinking)));
+        v.settle();
         shrinking.shrink(address(v), 50e18); // balances change outside transfers: unsupported asset behaviour
-        v.settle(IERC20(address(shrinking))); // no revert, nothing new to allocate
-        assertEq(v.pending(IERC20(address(shrinking))), 0);
+        v.settle(); // no revert, nothing new to allocate
+        assertEq(v.pending(), 0);
         vm.prank(provider);
-        assertEq(v.claim(IERC20(address(shrinking))), 30e18, "first claimant is paid");
+        assertEq(v.claim(), 30e18, "first claimant is paid");
         vm.prank(owner);
-        assertEq(v.claim(IERC20(address(shrinking))), 20e18, "the last claimant takes what is there");
-        assertEq(
-            v.claimable(IERC20(address(shrinking)), owner), 50e18, "the rest stays allocated, the ledger does not lie"
-        );
-        assertEq(v.shortfall(IERC20(address(shrinking))), 50e18);
+        assertEq(v.claim(), 20e18, "the last claimant takes what is there");
+        assertEq(v.claimable(owner), 50e18, "the rest stays allocated, the ledger does not lie");
+        assertEq(v.shortfall(), 50e18);
         vm.prank(owner);
         vm.expectRevert(SeatVault.NothingToClaim.selector); // nothing left to pay until the balance recovers
-        v.claim(IERC20(address(shrinking)));
+        v.claim();
     }
 
     function test_rescueOtherNFTsButNeverTheSeat() public {

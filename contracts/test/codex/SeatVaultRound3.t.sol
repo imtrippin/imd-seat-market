@@ -79,9 +79,9 @@ contract SeatVaultRound3 is Test {
         assertEq(seats.ownerOf(TOKEN), owner);
         assertTrue(registry.isController(agentId, owner), "control of the agent follows the seat");
         assertEq(vault.isValidSignature(digest, signature), bytes4(0xffffffff));
-        assertEq(vault.accounted(reward), 0, "NFT exit intentionally did not settle");
+        assertEq(vault.accounted(), 0, "NFT exit intentionally did not settle");
         vm.prank(provider);
-        vault.claim(reward);
+        vault.claim();
         assertEq(reward.balanceOf(provider), 30);
     }
 
@@ -141,15 +141,15 @@ contract SeatVaultRound3 is Test {
         SeatVault partitioned = _newVault(3000);
         reward.mint(address(vault), 1);
         reward.mint(address(partitioned), 1);
-        partitioned.settle(reward);
+        partitioned.settle();
         vm.prank(owner);
         vault.withdrawNFT(owner);
         reward.mint(address(vault), 1);
         reward.mint(address(partitioned), 1);
-        vault.settle(reward);
-        partitioned.settle(reward);
-        assertEq(vault.claimable(reward, provider), 1);
-        assertEq(partitioned.claimable(reward, provider), 2);
+        vault.settle();
+        partitioned.settle();
+        assertEq(vault.claimable(provider), 1);
+        assertEq(partitioned.claimable(provider), 2);
     }
 
     function testFuzz_roundingBoundsAcrossSettlementPartitions(bytes32 seed, uint16 rawBps) public {
@@ -162,10 +162,10 @@ contract SeatVaultRound3 is Test {
         for (uint256 i; i < n; ++i) {
             seed = keccak256(abi.encode(seed, i));
             uint256 received = 1 + (uint256(seed) % 1e24);
-            uint256 prior = vault.claimable(reward, provider);
+            uint256 prior = vault.claimable(provider);
             reward.mint(address(vault), received);
-            vault.settle(reward);
-            uint256 actual = vault.claimable(reward, provider) - prior;
+            vault.settle();
+            uint256 actual = vault.claimable(provider) - prior;
             uint256 floor = Math.mulDiv(received, bps, 10_000);
             assertGe(actual, floor);
             assertLe(actual - floor, 1);
@@ -173,13 +173,13 @@ contract SeatVaultRound3 is Test {
             total += received;
         }
         reward.mint(address(batch), total);
-        batch.settle(reward);
-        uint256 splitHost = vault.claimable(reward, provider);
-        uint256 batchHost = batch.claimable(reward, provider);
+        batch.settle();
+        uint256 splitHost = vault.claimable(provider);
+        uint256 batchHost = batch.claimable(provider);
         assertGe(batchHost, sumFloors, "batching never underpays the sum of per-arrival floors");
         assertGe(splitHost, batchHost);
         assertLe(splitHost - batchHost, n - 1);
-        assertEq(batchHost + batch.claimable(reward, owner), total);
-        assertEq(splitHost + vault.claimable(reward, owner), total);
+        assertEq(batchHost + batch.claimable(owner), total);
+        assertEq(splitHost + vault.claimable(owner), total);
     }
 }

@@ -112,8 +112,8 @@ contract SeatVaultV2Probes is Test {
         reward.setMode(5);
         vm.prank(owner);
         vault.withdrawNFT(owner);
-        vault.settle(reward);
-        assertEq(vault.claimable(reward, provider), 30);
+        vault.settle();
+        assertEq(vault.claimable(provider), 30);
         assertEq(seats.ownerOf(TOKEN), owner);
     }
 
@@ -123,12 +123,12 @@ contract SeatVaultV2Probes is Test {
         reward.setMode(4);
         vm.prank(owner);
         vault.withdrawNFT(owner);
-        assertEq(vault.accounted(reward), 0, "nothing was settled while the token was unreadable");
+        assertEq(vault.accounted(), 0, "nothing was settled while the token was unreadable");
         reward.setMode(0);
         vm.prank(provider);
-        vault.claim(reward);
+        vault.claim();
         assertEq(reward.balanceOf(provider), 30);
-        assertEq(vault.claimable(reward, owner), 70);
+        assertEq(vault.claimable(owner), 70);
     }
 
     function test_fullUint256BalanceSplitsWithoutOverflow() public {
@@ -136,9 +136,9 @@ contract SeatVaultV2Probes is Test {
         reward.mint(address(vault), type(uint256).max);
         vm.prank(owner);
         vault.withdrawNFT(owner);
-        vault.settle(reward);
-        assertEq(vault.accounted(reward), type(uint256).max);
-        assertEq(vault.claimable(reward, owner) + vault.claimable(reward, provider), type(uint256).max);
+        vault.settle();
+        assertEq(vault.accounted(), type(uint256).max);
+        assertEq(vault.claimable(owner) + vault.claimable(provider), type(uint256).max);
     }
 
     // ------------------------------------------------------------ custody state machine, two vaults for one seat
@@ -159,8 +159,10 @@ contract SeatVaultV2Probes is Test {
                 vm.prank(owner);
                 seats.transferFrom(owner, address(target), TOKEN);
             } else if (action == 2 && !target.ended() && holder == address(target)) {
+                bool recorded = target.held(); // read before the prank: a getter would consume it
+                if (!recorded) vm.expectRevert(SeatVault.NotHeld.selector); // plain-transferred, not yet synced
                 vm.prank(provider);
-                target.end(); // the provider can end only once the seat is in the vault
+                target.end(); // the provider can end only once the owner recorded the seat
             } else if (action == 3 && holder == address(target)) {
                 vm.prank(owner);
                 target.withdrawNFT(owner);

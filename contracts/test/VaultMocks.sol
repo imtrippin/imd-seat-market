@@ -119,9 +119,9 @@ contract ReenteringRewardToken is MockERC20 {
     function _update(address from, address to, uint256 value) internal override {
         super._update(from, to, value);
         if (address(target) == address(0) || from != address(target)) return;
-        (bool ok, bytes memory reason) = address(target).call(abi.encodeCall(SeatVault.claim, (this)));
+        (bool ok, bytes memory reason) = address(target).call(abi.encodeCall(SeatVault.claim, ()));
         if (!ok && bytes4(reason) == bytes4(keccak256("ReentrancyGuardReentrantCall()"))) blocked++;
-        (ok, reason) = address(target).call(abi.encodeCall(SeatVault.settle, (this)));
+        (ok, reason) = address(target).call(abi.encodeCall(SeatVault.settle, ()));
         if (!ok && bytes4(reason) == bytes4(keccak256("ReentrancyGuardReentrantCall()"))) blocked++;
     }
 }
