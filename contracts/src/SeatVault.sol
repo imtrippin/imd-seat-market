@@ -263,7 +263,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     /// @notice The agent registration IMD asks the seat holder to send (`GET /agents/register-intent` returns the
     /// calldata: `register(0, collection, tokenId, agentURI)` to IMD's registrar). Owner-only, while the seat is
     /// held and the agreement is open, to the pinned registrar, only its two `register` functions, and only for
-    /// this vault's own seat. Anything else (URI or metadata updates, wallet changes, approvals) is refused, so
+    /// this vault's own seat as an ERC-721 (`standard` 0). Anything else (URI or metadata updates, wallet changes, approvals) is refused, so
     /// calldata proposed by a third party cannot do more than register. If the registrar's implementation changes
     /// its registration ABI, this fails closed and needs a new vault version. The registrar keeps the agent NFT
     /// itself and control of the agent follows whoever owns the seat, so it leaves with the seat on withdrawal;
@@ -276,8 +276,8 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         bytes4 selector = bytes4(data[:4]);
         if (selector != REGISTER_SELECTOR && selector != REGISTER_META_SELECTOR) revert NotARegistration();
         if (data.length < 4 + 3 * 32) revert InvalidTerms();
-        (, address tokenContract, uint256 boundTokenId) = abi.decode(data[4:], (uint8, address, uint256));
-        if (tokenContract != address(collection) || boundTokenId != tokenId) revert WrongToken();
+        (uint8 standard, address tokenContract, uint256 boundTokenId) = abi.decode(data[4:], (uint8, address, uint256));
+        if (standard != 0 || tokenContract != address(collection) || boundTokenId != tokenId) revert WrongToken();
         bool ok;
         (ok, result) = registrar.call(data);
         if (!ok) revert RegistryCallFailed();

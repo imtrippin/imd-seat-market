@@ -188,6 +188,9 @@ contract SeatVaultSwarmProbes is Test {
         bytes memory otherCollection = abi.encodeWithSelector(
             vault.REGISTER_SELECTOR(), uint8(0), address(reward), uint256(1), "ipfs://agent-card"
         );
+        bytes memory otherStandard = abi.encodeWithSelector(
+            vault.REGISTER_SELECTOR(), uint8(1), address(seats), uint256(1), "ipfs://agent-card"
+        );
         bytes memory tooShort = abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(seats));
         address delegate = makeAddr("delegate");
         vm.startPrank(owner);
@@ -203,6 +206,8 @@ contract SeatVaultSwarmProbes is Test {
         vault.registerAgent(otherSeat);
         vm.expectRevert(SeatVault.WrongToken.selector);
         vault.registerAgent(otherCollection);
+        vm.expectRevert(SeatVault.WrongToken.selector);
+        vault.registerAgent(otherStandard);
         vm.expectRevert(SeatVault.InvalidTerms.selector);
         vault.registerAgent(tooShort);
         uint256 agentId = abi.decode(vault.registerAgent(good), (uint256));
