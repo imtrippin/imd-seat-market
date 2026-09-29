@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.30;
 
-// Mainnet FORK rehearsal against the real IMD seat collection, the real IMD token and the real ERC-8004 registry, with
-// the seat's current holder impersonated by the test harness. Read-only RPC; nothing is broadcast. Skips unless both
-// MAINNET_RPC_URL and FORK_SEAT (the token id of a seat to rehearse with; its holder is read from the collection) are
-// set, so CI and reviewers never touch a network by default. FORK_BLOCK pins the fork to a block for reproducibility.
+// Mainnet FORK rehearsal against the real IMD seat collection, the real IMD token and IMD's real registrar (the
+// Adapter8004 proxy that `GET /agents/register-intent` points at), with the seat's current holder impersonated by the
+// test harness. Read-only RPC; nothing is broadcast. Skips unless both MAINNET_RPC_URL and FORK_SEAT (the token id of
+// a seat to rehearse with; its holder is read from the collection) are set, so CI and reviewers never touch a network
+// by default. FORK_BLOCK pins the fork to a block for reproducibility.
 //   MAINNET_RPC_URL=<mainnet rpc> FORK_SEAT=<token id> forge test --match-contract MainnetFork -vv
 
 import {Test} from "forge-std/Test.sol";
@@ -12,15 +13,16 @@ import {SeatVault, SeatVaultFactory} from "../../src/SeatVault.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
-interface IRegistry {
-    function register() external returns (uint256);
-    function ownerOf(uint256) external view returns (address);
+interface IRegistrar {
+    function isController(uint256 agentId, address account) external view returns (bool);
+    function ownerOf(uint256 agentId) external view returns (address);
+    function getAgentWallet(uint256 agentId) external view returns (address);
 }
 
 contract MainnetFork is Test {
     IERC721 constant SEATS = IERC721(0x0000eC93127BAA929E58E97dd0095A2BFb38ec1D); // IdentityMD seats (verified, no proxy)
     IERC20 constant IMD = IERC20(0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7);
-    address constant REGISTRY = 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432; // ERC-8004 identity registry (proxy)
+    address constant REGISTRAR = 0xde152AfB7db5373F34876E1499fbD893A82dD336; // IMD's Adapter8004 (ERC-1967 proxy)
     uint256 constant OPERATOR_KEY = 0xA11CE;
     address provider = makeAddr("host");
     bool forked;
@@ -48,10 +50,16 @@ contract MainnetFork is Test {
         seat = vm.parseUint(seatId);
         holder = SEATS.ownerOf(seat); // whoever holds the seat on the fork is the vault's owner in this rehearsal
         assertTrue(holder != address(0));
-        factory = new SeatVaultFactory(SEATS, IMD, REGISTRY, "https://api.imd.fun");
+        factory = new SeatVaultFactory(SEATS, IMD, REGISTRAR, "https://api.imd.fun");
         vm.prank(holder);
         vault = factory.create(provider, vm.addr(OPERATOR_KEY), seat, 3000, keccak256("rehearsal device"));
         forked = true;
+    }
+
+    /// @dev What `GET /agents/register-intent?tokenId=<seat>` returns for a seat: `register(0, collection, seat, uri)`.
+    function _registerIntent() internal view returns (bytes memory) {
+        string memory uri = string.concat("https://api.imd.fun/agents/by-token/", vm.toString(seat), ".json");
+        return abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(SEATS), seat, uri);
     }
 
     function test_depositAndWithdrawRoundTripWithTheRealCollection() public onlyFork {
@@ -88,14 +96,19 @@ contract MainnetFork is Test {
         vm.stopPrank();
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(OPERATOR_KEY, digest);
         assertEq(vault.isValidSignature(digest, abi.encodePacked(r, s, v)), bytes4(0x1626ba7e));
-        // registration through the vault against the real registry: whatever it mints lands in the vault
+        // registration through the vault with IMD's real register-intent calldata, against the real registrar
+        bytes memory intent = _registerIntent();
         vm.prank(holder);
-        bytes memory result = vault.registerAgent(abi.encodeCall(IRegistry.register, ()));
+        bytes memory result = vault.registerAgent(intent);
         uint256 agentId = abi.decode(result, (uint256));
-        assertEq(
-            IRegistry(REGISTRY).ownerOf(agentId), address(vault), "the real registry minted the agent NFT to the vault"
+        emit log_named_uint("agent id registered on the fork", agentId);
+        IRegistrar registrar = IRegistrar(REGISTRAR);
+        assertEq(registrar.ownerOf(agentId), REGISTRAR, "the registrar keeps the agent NFT");
+        assertTrue(
+            registrar.isController(agentId, address(vault)), "the vault controls the agent while it holds the seat"
         );
-        emit log_named_uint("agent id minted on the fork", agentId);
+        assertFalse(registrar.isController(agentId, holder));
+        assertEq(registrar.getAgentWallet(agentId), address(0), "no agent wallet is set at registration");
         // a reward arrives: the real IMD token's balance of the vault is raised by the harness
         deal(address(IMD), address(vault), 100e18);
         uint256 holderBefore = IMD.balanceOf(holder);
@@ -104,18 +117,31 @@ contract MainnetFork is Test {
         vm.prank(holder);
         assertEq(vault.claim(IMD), 70e18);
         assertEq(IMD.balanceOf(holder) - holderBefore, 70e18);
-        // exit: the seat comes back, the agent NFT can be rescued afterwards
-        vm.startPrank(holder);
+        // exit: the seat comes back and control of the agent follows it, with no rescue needed
+        vm.prank(holder);
         vault.withdrawNFT(holder);
         assertEq(SEATS.ownerOf(seat), holder);
-        vault.rescueERC721(IERC721(REGISTRY), agentId, holder);
-        assertEq(IRegistry(REGISTRY).ownerOf(agentId), holder);
-        vm.stopPrank();
+        assertTrue(registrar.isController(agentId, holder), "control follows the seat out of the vault");
+        assertFalse(registrar.isController(agentId, address(vault)));
         assertEq(
             vault.isValidSignature(digest, abi.encodePacked(r, s, v)),
             bytes4(0xffffffff),
             "nothing validates after exit"
         );
+    }
+
+    function test_registrationRefusesAnotherSeatOrAnotherCall() public onlyFork {
+        vm.startPrank(holder);
+        SEATS.approve(address(vault), seat);
+        vault.deposit();
+        string memory uri = string.concat("https://api.imd.fun/agents/by-token/", vm.toString(seat + 1), ".json");
+        bytes memory otherSeat =
+            abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(SEATS), seat + 1, uri);
+        vm.expectRevert(SeatVault.WrongToken.selector);
+        vault.registerAgent(otherSeat);
+        vm.expectRevert(SeatVault.NotARegistration.selector);
+        vault.registerAgent(abi.encodeWithSignature("setAgentURI(uint256,string)", uint256(1), uri));
+        vm.stopPrank();
     }
 
     function test_nobodyElseCanMoveTheSeat() public onlyFork {

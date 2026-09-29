@@ -8,7 +8,7 @@ import {Test} from "forge-std/Test.sol";
 import {SeatVault} from "../src/SeatVault.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistry} from "./VaultMocks.sol";
+import {MockERC721, MockRegistrar} from "./VaultMocks.sol";
 
 /// @dev A reward token whose balance read misbehaves in every way a caller would have to survive.
 contract MalformedBalanceToken is MockERC20 {
@@ -55,14 +55,14 @@ contract SeatVaultV2Probes is Test {
     uint256 internal constant TOKEN = 2048;
     MockERC721 internal seats;
     MalformedBalanceToken internal reward;
-    MockRegistry internal registry;
+    MockRegistrar internal registry;
     SeatVault internal vault;
 
     function setUp() public {
         vm.warp(1_800_000_000);
         seats = new MockERC721();
         reward = new MalformedBalanceToken();
-        registry = new MockRegistry();
+        registry = new MockRegistrar();
         seats.mint(owner, TOKEN);
         vault = _newVault();
     }

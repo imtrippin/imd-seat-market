@@ -41,10 +41,12 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         "WorkerAuthorization(bytes32 deviceKey,address wallet,uint256 tokenId,bytes32 nonce,uint64 expiresAt,string relayOrigin)"
     );
     uint256 public constant MAX_PAIRING_WINDOW = 1 hours;
-    /// @dev The ERC-8004 identity registry's registration functions (implementation verified 2026-09-29).
-    bytes4 public constant REGISTER_SELECTOR = bytes4(keccak256("register()"));
-    bytes4 public constant REGISTER_URI_SELECTOR = bytes4(keccak256("register(string)"));
-    bytes4 public constant REGISTER_META_SELECTOR = bytes4(keccak256("register(string,(string,bytes)[])"));
+    /// @dev IMD's registrar (`Adapter8004`, verified source read 2026-09-29) registers a seat's ERC-8004 agent with
+    /// `register(uint8 standard, address tokenContract, uint256 tokenId, string agentURI)`, optionally with metadata
+    /// entries; `GET /agents/register-intent` returns exactly that calldata. Selectors 0xb68ca002 and 0x1fd8046a.
+    bytes4 public constant REGISTER_SELECTOR = bytes4(keccak256("register(uint8,address,uint256,string)"));
+    bytes4 public constant REGISTER_META_SELECTOR =
+        bytes4(keccak256("register(uint8,address,uint256,string,(string,bytes)[])"));
     uint256 public constant BPS = 10_000;
 
     address public immutable owner;
@@ -54,7 +56,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     uint256 public immutable tokenId;
     IERC20 public immutable rewardToken;
     uint16 public immutable providerBps;
-    address public immutable identityRegistry;
+    address public immutable registrar;
     bytes32 public immutable relayOriginHash;
     string public relayOrigin;
 
@@ -107,16 +109,15 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         IERC20 rewardToken_,
         uint16 providerBps_,
         bytes32 deviceKey_,
-        address identityRegistry_,
+        address registrar_,
         string memory relayOrigin_
     ) {
         if (
             owner_ == address(0) || provider_ == address(0) || operator_ == address(0) || owner_ == provider_
                 || operator_ == owner_ || operator_ == provider_ || address(collection_) == address(0)
-                || address(rewardToken_) == address(0) || identityRegistry_ == address(0)
-                || identityRegistry_ == address(collection_) || identityRegistry_ == address(rewardToken_)
-                || identityRegistry_.code.length == 0 || providerBps_ > BPS || deviceKey_ == bytes32(0)
-                || bytes(relayOrigin_).length == 0
+                || address(rewardToken_) == address(0) || registrar_ == address(0) || registrar_ == address(collection_)
+                || registrar_ == address(rewardToken_) || registrar_.code.length == 0 || providerBps_ > BPS
+                || deviceKey_ == bytes32(0) || bytes(relayOrigin_).length == 0
         ) revert InvalidTerms();
         owner = owner_;
         provider = provider_;
@@ -126,7 +127,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         rewardToken = rewardToken_;
         providerBps = providerBps_;
         deviceKey = deviceKey_;
-        identityRegistry = identityRegistry_;
+        registrar = registrar_;
         relayOrigin = relayOrigin_;
         relayOriginHash = keccak256(bytes(relayOrigin_));
     }
@@ -140,7 +141,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice The seat NFT is accepted only from the owner, only once, only before exit. Any other collection's
-    /// token is accepted and can be rescued by the owner later (an identity registry may safe-mint one here).
+    /// token is accepted and can be rescued by the owner later (another collection may safe-mint one here).
     function onERC721Received(address, address from, uint256 id, bytes calldata) external returns (bytes4) {
         if (msg.sender != address(collection)) {
             emit OtherNFTReceived(msg.sender, id, from);
@@ -259,24 +260,26 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         return keccak256(abi.encodePacked("\x19\x01", domain, structHash));
     }
 
-    /// @notice The ERC-8004 registration IMD asks the holder wallet to send (`GET /agents/register-intent` gives the
-    /// calldata). Owner-only, while the seat is held and the agreement is open, to the pinned registry, and only
-    /// one of the registry's three `register` functions: `register()`, `register(string)` and
-    /// `register(string,(string,bytes)[])`. Anything else (approvals, transfers, metadata) is refused, so calldata
-    /// proposed by a third party cannot hand the agent NFT away. If the registry's implementation changes its
-    /// registration ABI, this fails closed and needs a new vault version. The registry may safe-mint an agent NFT
-    /// here, which the owner can rescue (moving that token changes its registered wallet on the registry's side).
+    /// @notice The agent registration IMD asks the seat holder to send (`GET /agents/register-intent` returns the
+    /// calldata: `register(0, collection, tokenId, agentURI)` to IMD's registrar). Owner-only, while the seat is
+    /// held and the agreement is open, to the pinned registrar, only its two `register` functions, and only for
+    /// this vault's own seat. Anything else (URI or metadata updates, wallet changes, approvals) is refused, so
+    /// calldata proposed by a third party cannot do more than register. If the registrar's implementation changes
+    /// its registration ABI, this fails closed and needs a new vault version. The registrar keeps the agent NFT
+    /// itself and control of the agent follows whoever owns the seat, so it leaves with the seat on withdrawal;
+    /// nothing needs rescuing. IMD's off-chain bind of seat to agent (`POST /agents/bind`) is a separate step.
     function registerAgent(bytes calldata data) external nonReentrant returns (bytes memory result) {
         if (msg.sender != owner) revert NotOwner();
         if (ended) revert AlreadyEnded();
         if (!held) revert NotHeld();
         if (data.length < 4) revert InvalidTerms();
         bytes4 selector = bytes4(data[:4]);
-        if (selector != REGISTER_SELECTOR && selector != REGISTER_URI_SELECTOR && selector != REGISTER_META_SELECTOR) {
-            revert NotARegistration();
-        }
+        if (selector != REGISTER_SELECTOR && selector != REGISTER_META_SELECTOR) revert NotARegistration();
+        if (data.length < 4 + 3 * 32) revert InvalidTerms();
+        (, address tokenContract, uint256 boundTokenId) = abi.decode(data[4:], (uint8, address, uint256));
+        if (tokenContract != address(collection) || boundTokenId != tokenId) revert WrongToken();
         bool ok;
-        (ok, result) = identityRegistry.call(data);
+        (ok, result) = registrar.call(data);
         if (!ok) revert RegistryCallFailed();
         emit AgentRegistered(data);
     }
@@ -349,10 +352,10 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         approvedChain = 0;
     }
 
-    /// @dev The seat collection and the registry are ERC-721s: their `balanceOf` is a token count, never a reward,
+    /// @dev The seat collection and the registrar are never reward tokens: an ERC-721 `balanceOf` is a token count,
     /// and a collection with a legacy `transfer(address,uint256)` would move a seat on a claim.
     function _rejectNonRewards(IERC20 token) internal view {
-        if (address(token) == address(collection) || address(token) == identityRegistry) revert UnsupportedToken();
+        if (address(token) == address(collection) || address(token) == registrar) revert UnsupportedToken();
     }
 
     function _settle(IERC20 token, uint256 balance) internal {
@@ -379,11 +382,11 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
 }
 
 /// @title SeatVaultFactory: one fresh vault per agreement, all pinned to the same collection, reward token,
-/// identity registry and relay, so a vault can never be misconfigured by the parties.
+/// registrar and relay, so a vault can never be misconfigured by the parties.
 contract SeatVaultFactory {
     IERC721 public immutable collection;
     IERC20 public immutable rewardToken;
-    address public immutable identityRegistry;
+    address public immutable registrar;
     string public relayOrigin;
     address[] public vaults;
 
@@ -393,16 +396,16 @@ contract SeatVaultFactory {
         address indexed vault, address indexed owner, address indexed provider, uint256 tokenId, uint16 providerBps
     );
 
-    constructor(IERC721 collection_, IERC20 rewardToken_, address identityRegistry_, string memory relayOrigin_) {
+    constructor(IERC721 collection_, IERC20 rewardToken_, address registrar_, string memory relayOrigin_) {
         if (
             address(collection_).code.length == 0 || address(rewardToken_).code.length == 0
-                || identityRegistry_.code.length == 0 || address(collection_) == address(rewardToken_)
-                || identityRegistry_ == address(collection_) || identityRegistry_ == address(rewardToken_)
+                || registrar_.code.length == 0 || address(collection_) == address(rewardToken_)
+                || registrar_ == address(collection_) || registrar_ == address(rewardToken_)
                 || bytes(relayOrigin_).length == 0
         ) revert InvalidConfiguration();
         collection = collection_;
         rewardToken = rewardToken_;
-        identityRegistry = identityRegistry_;
+        registrar = registrar_;
         relayOrigin = relayOrigin_;
     }
 
@@ -420,7 +423,7 @@ contract SeatVaultFactory {
             rewardToken,
             providerBps,
             deviceKey,
-            identityRegistry,
+            registrar,
             relayOrigin
         );
         vaults.push(address(vault));

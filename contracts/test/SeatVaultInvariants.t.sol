@@ -9,7 +9,7 @@ import {Test} from "forge-std/Test.sol";
 import {SeatVault} from "../src/SeatVault.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistry} from "./VaultMocks.sol";
+import {MockERC721, MockRegistrar} from "./VaultMocks.sol";
 
 contract VaultHandler is Test {
     SeatVault public vault;
@@ -89,7 +89,7 @@ contract SeatVaultInvariants is Test {
         vm.warp(1_800_000_000);
         seats = new MockERC721();
         token = new MockERC20();
-        MockRegistry registry = new MockRegistry();
+        MockRegistrar registry = new MockRegistrar();
         seats.mint(owner, 1);
         vault = new SeatVault(
             owner,

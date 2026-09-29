@@ -15,20 +15,64 @@ contract MockERC721 is ERC721 {
     }
 }
 
-/// @dev Stands in for the ERC-8004 identity registry: records who called it and with what.
-contract MockRegistry {
+/// @dev Stands in for IMD's registrar (`Adapter8004`, verified source read 2026-09-29): `register(uint8 standard,
+/// address tokenContract, uint256 tokenId, string agentURI)`, with or without metadata entries, may be called only by
+/// the token's current owner; the ERC-8004 agent it creates stays with the registrar, and control of the agent
+/// follows whoever owns the bound token. Records the last call and can be told to refuse.
+contract MockRegistrar {
+    struct Binding {
+        address tokenContract;
+        uint256 tokenId;
+    }
+
+    struct MetadataEntry {
+        string metadataKey;
+        bytes metadataValue;
+    }
+
     address public lastCaller;
     bytes public lastData;
     bool public shouldFail;
+    uint256 public agentCount;
+    mapping(uint256 => Binding) public bindings;
+
+    error NotController(address account);
+    error Refused();
 
     function setFail(bool fail) external {
         shouldFail = fail;
     }
 
-    fallback() external {
-        require(!shouldFail, "registry: refused");
+    function register(uint8, address tokenContract, uint256 tokenId, string calldata) external returns (uint256) {
+        return _register(tokenContract, tokenId);
+    }
+
+    function register(uint8, address tokenContract, uint256 tokenId, string calldata, MetadataEntry[] calldata)
+        external
+        returns (uint256)
+    {
+        return _register(tokenContract, tokenId);
+    }
+
+    /// @dev As on mainnet: whoever currently owns the bound token controls the agent.
+    function isController(uint256 agentId, address account) external view returns (bool) {
+        Binding memory b = bindings[agentId];
+        return b.tokenContract != address(0) && IERC721(b.tokenContract).ownerOf(b.tokenId) == account;
+    }
+
+    /// @dev The registrar itself holds the agent NFT in the ERC-8004 registry.
+    function ownerOf(uint256 agentId) external view returns (address) {
+        require(bindings[agentId].tokenContract != address(0), "unknown agent");
+        return address(this);
+    }
+
+    function _register(address tokenContract, uint256 tokenId) internal returns (uint256 agentId) {
+        if (shouldFail) revert Refused();
+        if (IERC721(tokenContract).ownerOf(tokenId) != msg.sender) revert NotController(msg.sender);
         lastCaller = msg.sender;
         lastData = msg.data;
+        agentId = ++agentCount;
+        bindings[agentId] = Binding(tokenContract, tokenId);
     }
 }
 

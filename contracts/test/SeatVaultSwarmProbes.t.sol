@@ -10,8 +10,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistry} from "./VaultMocks.sol";
-import {SafeMintRegistry} from "./SeatVaultReviewProbes.t.sol";
+import {MockERC721, MockRegistrar} from "./VaultMocks.sol";
 
 /// @dev A seat collection with the pre-standard `transfer(address,uint256)` some old collections still expose.
 contract LegacyTransferCollection is ERC721 {
@@ -37,14 +36,14 @@ contract SeatVaultSwarmProbes is Test {
     bytes4 internal constant INVALID = 0xffffffff;
     MockERC721 internal seats;
     MockERC20 internal reward;
-    MockRegistry internal registry;
+    MockRegistrar internal registry;
     SeatVault internal vault;
 
     function setUp() public {
         vm.warp(T0);
         seats = new MockERC721();
         reward = new MockERC20();
-        registry = new MockRegistry();
+        registry = new MockRegistrar();
         seats.mint(owner, 1);
         vault = new SeatVault(
             owner,
@@ -174,47 +173,68 @@ contract SeatVaultSwarmProbes is Test {
         assertEq(reward.balanceOf(address(vault)), 0);
     }
 
-    // ------------------------------------------------------------ F5: only registrations reach the registry
+    // ------------------------------------------------------------ F5: only this seat's registration reaches the registrar
 
-    function test_registerAgentForwardsOnlyTheThreeRegisterSelectors() public {
-        SafeMintRegistry safeRegistry = new SafeMintRegistry();
-        SeatVault v = new SeatVault(
-            owner,
-            provider,
-            vm.addr(OPERATOR_KEY),
-            seats,
-            1,
-            reward,
-            3000,
-            keccak256("swarm-device"),
-            address(safeRegistry),
-            RELAY
+    function _registration(uint256 seatId) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(seats), seatId, "ipfs://agent-card");
+    }
+
+    function test_registerAgentForwardsOnlyTheRegistrarsRegisterSelectorsForThisSeat() public {
+        _deposit(vault);
+        assertEq(vault.REGISTER_SELECTOR(), bytes4(0xb68ca002));
+        assertEq(vault.REGISTER_META_SELECTOR(), bytes4(0x1fd8046a));
+        bytes memory good = _registration(1);
+        bytes memory otherSeat = _registration(2);
+        bytes memory otherCollection = abi.encodeWithSelector(
+            vault.REGISTER_SELECTOR(), uint8(0), address(reward), uint256(1), "ipfs://agent-card"
         );
-        _deposit(v);
-        vm.prank(owner);
-        v.registerAgent(abi.encodeCall(SafeMintRegistry.register, ()));
-        assertEq(safeRegistry.ownerOf(1), address(v));
+        bytes memory tooShort = abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(seats));
         address delegate = makeAddr("delegate");
         vm.startPrank(owner);
         vm.expectRevert(SeatVault.NotARegistration.selector);
-        v.registerAgent(abi.encodeCall(IERC721.setApprovalForAll, (delegate, true)));
+        vault.registerAgent(abi.encodeCall(IERC721.setApprovalForAll, (delegate, true)));
         vm.expectRevert(SeatVault.NotARegistration.selector);
-        v.registerAgent(abi.encodeCall(IERC721.transferFrom, (address(v), delegate, 1)));
+        vault.registerAgent(abi.encodeWithSignature("setAgentURI(uint256,string)", uint256(1), "ipfs://x"));
         vm.expectRevert(SeatVault.NotARegistration.selector);
-        v.registerAgent(abi.encodeWithSelector(bytes4(keccak256("setAgentWallet(uint256,address)")), 1, delegate));
+        vault.registerAgent(
+            abi.encodeWithSignature("setAgentWallet(uint256,address,uint256,bytes)", 1, delegate, 0, "")
+        );
+        vm.expectRevert(SeatVault.WrongToken.selector);
+        vault.registerAgent(otherSeat);
+        vm.expectRevert(SeatVault.WrongToken.selector);
+        vault.registerAgent(otherCollection);
+        vm.expectRevert(SeatVault.InvalidTerms.selector);
+        vault.registerAgent(tooShort);
+        uint256 agentId = abi.decode(vault.registerAgent(good), (uint256));
         vm.stopPrank();
-        assertEq(v.REGISTER_SELECTOR(), bytes4(0x1aa3a008));
-        assertEq(v.REGISTER_URI_SELECTOR(), bytes4(0xf2c298be));
-        assertEq(v.REGISTER_META_SELECTOR(), bytes4(0x8ea42286));
+        assertEq(registry.lastCaller(), address(vault), "the holder, the vault, is the registrar's caller");
+        assertEq(registry.ownerOf(agentId), address(registry), "the registrar keeps the agent NFT");
+        assertTrue(registry.isController(agentId, address(vault)));
     }
 
-    function test_registerOverloadsPassTheSelectorCheck() public {
+    function test_registerWithMetadataPassesTheSelectorCheck() public {
         _deposit(vault);
-        vm.startPrank(owner);
-        vault.registerAgent(abi.encodeWithSelector(bytes4(0xf2c298be), "ipfs://agent-card"));
-        vault.registerAgent(abi.encodeWithSelector(bytes4(0x8ea42286), "ipfs://agent-card", new bytes(0)));
-        vm.stopPrank();
+        MockRegistrar.MetadataEntry[] memory entries = new MockRegistrar.MetadataEntry[](1);
+        entries[0] = MockRegistrar.MetadataEntry("k", "v");
+        bytes memory data = abi.encodeWithSelector(
+            vault.REGISTER_META_SELECTOR(), uint8(0), address(seats), uint256(1), "ipfs://agent-card", entries
+        );
+        vm.prank(owner);
+        vault.registerAgent(data);
         assertEq(registry.lastCaller(), address(vault));
+    }
+
+    function test_agentControlFollowsTheSeat() public {
+        _deposit(vault);
+        bytes memory data = _registration(1);
+        vm.prank(owner);
+        uint256 agentId = abi.decode(vault.registerAgent(data), (uint256));
+        assertTrue(registry.isController(agentId, address(vault)));
+        assertFalse(registry.isController(agentId, owner));
+        vm.prank(owner);
+        vault.withdrawNFT(owner);
+        assertTrue(registry.isController(agentId, owner), "control follows the seat out of the vault");
+        assertFalse(registry.isController(agentId, address(vault)));
     }
 
     // ------------------------------------------------------------ F8: the listed coverage gaps

@@ -24,11 +24,11 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 
 ## Required examination
 
-0. Challenge the fixes from the first swarm round rather than assume them: the refusal of the seat collection and the registry as `token`, the provider's `end()` ordering, claims under a shortfall and their recovery, the registry selector allowlist, both pairing clocks in the helper, and whether the invariant campaign actually exercises every handler action.
+0. Challenge the fixes from the earlier swarm rounds rather than assume them: the refusal of the seat collection and the registrar as `token`, the provider's `end()` ordering, claims under a shortfall and their recovery, the registrar selector and own-seat calldata check (new this round), both pairing clocks in the helper, and whether the invariant campaign actually exercises every handler action.
 1. NFT custody under any sequence of deposit, plain transfer, `syncHeld`, `end`, `withdrawNFT`, `rescueERC721`, rejecting recipients, a second vault for the same token, repeated exit. Recovery must not call the reward token. Claims and immutable splits must survive NFT withdrawal and late arrivals to the old vault.
 2. ERC-1271 digest binding, replay boundaries (chain, relay, wallet, token, nonce), owner/operator/provider roles, expiry edges, revocation, device changes and chain changes. Separate signature approval from terminating an already enrolled remote device.
 3. Reward accounting: settle-by-balance-difference, rounding, exact-amount claims, reentrancy and callbacks, supported-token assumptions, shortfall behaviour, arbitrary incoming tokens, several tokens at once, claims after exit.
-4. `registerAgent` (limited to the registry's three `register` selectors; fails closed if the upgradeable implementation changes its ABI) and `rescueERC721`: what the owner can still do through them, consequences of rescuing the agent NFT, and whether a registration fee in ETH could ever be required.
+4. `registerAgent` (limited to IMD's registrar `register` selectors, and to calldata naming this vault's own seat; fails closed if the upgradeable implementation changes its ABI) and `rescueERC721`: what the owner can still do through them, and whether the calldata check can be bypassed by ABI encoding tricks (the decode reads the three head words only). The registrar's verified behaviour (it keeps the agent NFT; control of the agent follows the seat's owner) is described in `contracts/VAULT-DESIGN.md`.
 5. Pairing artifact validation and stale approval or custody risks; at-most-once transaction handling, nonce and receipt failures and restart reconciliation in the rehearsal script; stopping safely on ambiguous results. Run only the offline suites: they sign with their public fixture key and never broadcast. Do not run deployment, live pairing, the walkthrough itself, or anything with a real credential or an RPC.
 6. The consequences of the unverified IMD behaviour below: state what can and cannot be made enforceable with this design, including the owner-withdraws-before-payout case.
 7. Gaps in unit, fuzz, sequence-fuzz and invariant coverage. Add local reproductions if useful and say which are failing tests and which are witnesses of an intentional limitation.
@@ -49,11 +49,11 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 
 1. The relay calls `isValidSignature` with the expected EIP-712 digest and unmodified signature bytes.
 2. The complete pairing challenge schema, expiry formats and retry or conflict handling match the helper.
-3. The real register-intent payload and IMD's seat-to-agent binding accept this workflow. Reading registry code is not an end-to-end bind test.
+3. IMD's off-chain bind of seat to agent (`POST /agents/bind`) accepts a vault-held seat. The on-chain registration path (registrar, function, caller rule) was read from public data and exercised on a fork; the bind step was not.
 4. Contract holders receive rewards, and the moment used to select a reward recipient is understood. Work-time, snapshot-time and payout-time holder routing differ materially.
 5. NFT movement terminates the enrolled device as expected, including the disconnect delay and whether moving the token back revives anything.
 6. The vault must custody the actual NFT on its chain; Base Sepolia mocks do not demonstrate a mainnet-seat integration or a bridge.
-7. Agent identity and reputation across vaults: registering from a new vault, retaining or rescuing the old agent NFT, clearing its registered wallet and rebinding the seat must be verified separately. Do not assume identities migrate automatically.
+7. Agent identity across vaults: the registrar binds the agent to the seat and evaluates control from the seat's current owner, so on-chain control follows the seat into and out of any vault; whether IMD's off-chain records and reputation follow the same rule is unverified.
 
 ## Offline verification
 
@@ -63,9 +63,9 @@ From `contracts/`: `forge build`, `forge test`, `forge test --gas-report`, `forg
 
 From the repository root: `node --test test/pair-vault.test.mjs test/codex/vault-round3.test.mjs` and `node contracts/script/pair-vault.mjs --selftest`.
 
-Leave `MAINNET_RPC_URL` and `FORK_SEAT` unset for this review: the four tests in `contracts/test/fork/MainnetFork.t.sol` then skip. They exist as background evidence (the vault against the real IMD collection, token and registry on a mainnet fork, run by the maintainers, nothing broadcast); this review is offline only.
+Leave `MAINNET_RPC_URL` and `FORK_SEAT` unset for this review: the five tests in `contracts/test/fork/MainnetFork.t.sol` then skip. They exist as background evidence (the vault against the real IMD collection, token and registrar on a mainnet fork, run by the maintainers, nothing broadcast); this review is offline only.
 
-Expected on the reviewed commit: 64 Foundry tests across 7 suites, of which 60 pass and the 4 fork tests skip, plus 26 Node script tests. Report actual results and skips rather than assuming these counts.
+Expected on the reviewed commit: 66 Foundry tests across 7 suites, of which 61 pass and the 5 fork tests skip, plus 27 Node script tests. Report actual results and skips rather than assuming these counts.
 
 ## Finding format and deliverables
 

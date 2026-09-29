@@ -8,7 +8,7 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {MockERC20} from "./Mocks.sol";
 import {
     MockERC721,
-    MockRegistry,
+    MockRegistrar,
     ReenteringRewardToken,
     RecipientTaxRewardToken,
     ShrinkingRewardToken
@@ -21,7 +21,7 @@ contract SeatVaultTest is Test {
     SeatVault vault;
     MockERC721 seats;
     MockERC20 imd;
-    MockRegistry registry;
+    MockRegistrar registry;
 
     address owner = makeAddr("owner");
     address provider = makeAddr("provider");
@@ -41,7 +41,7 @@ contract SeatVaultTest is Test {
         operator = vm.addr(OPERATOR_KEY);
         seats = new MockERC721();
         imd = new MockERC20();
-        registry = new MockRegistry();
+        registry = new MockRegistrar();
         factory = new SeatVaultFactory(IERC721(address(seats)), IERC20(address(imd)), address(registry), RELAY);
         seats.mint(owner, TOKEN);
         vm.prank(owner);
@@ -311,7 +311,8 @@ contract SeatVaultTest is Test {
 
     function test_registerAgentOnlyOwnerOnlyRegistry() public {
         _deposit();
-        bytes memory data = abi.encodeWithSignature("register(string)", "ipfs://agent-card"); // one of the three register selectors
+        bytes memory data =
+            abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(seats), TOKEN, "ipfs://agent-card");
         vm.prank(provider);
         vm.expectRevert(SeatVault.NotOwner.selector);
         vault.registerAgent(data);
@@ -512,7 +513,7 @@ contract SeatVaultTest is Test {
     function test_rescueOtherNFTsButNeverTheSeat() public {
         _deposit();
         MockERC721 agentTokens = new MockERC721();
-        agentTokens.mint(address(vault), 51029); // what an identity registry might mint to the holder
+        agentTokens.mint(address(vault), 51029); // what another collection might mint to the holder
         vm.prank(provider);
         vm.expectRevert(SeatVault.NotOwner.selector);
         vault.rescueERC721(IERC721(address(agentTokens)), 51029, provider);
@@ -542,7 +543,7 @@ contract SeatVaultTest is Test {
         vm.stopPrank();
         assertEq(address(vault.collection()), address(seats));
         assertEq(address(vault.rewardToken()), address(imd));
-        assertEq(vault.identityRegistry(), address(registry));
+        assertEq(vault.registrar(), address(registry));
         assertEq(vault.relayOrigin(), RELAY);
         assertEq(vault.owner(), owner);
         assertEq(vault.providerBps(), PROVIDER_BPS);

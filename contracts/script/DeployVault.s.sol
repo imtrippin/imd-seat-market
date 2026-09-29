@@ -6,10 +6,10 @@ import {SeatVault, SeatVaultFactory} from "../src/SeatVault.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {MockERC20} from "../test/Mocks.sol";
-import {MockERC721, MockRegistry} from "../test/VaultMocks.sol";
+import {MockERC721, MockRegistrar} from "../test/VaultMocks.sol";
 
 /// @dev Testnet rehearsal of the vault set with mocks standing in for IMD's pieces (the seat collection, the IMD
-/// token, the identity registry). The deployer plays the owner and the "Disperse" payer; PROVIDER and OPERATOR are
+/// token, IMD's registrar). The deployer plays the owner and the "Disperse" payer; PROVIDER and OPERATOR are
 /// throwaway addresses. Nothing here talks to IMD.
 ///   PROVIDER=0x... OPERATOR=0x... forge script script/DeployVault.s.sol --rpc-url <base sepolia> --broadcast \
 ///     --private-key <throwaway deployer key>
@@ -26,7 +26,7 @@ contract DeployVault is Script {
         address owner = msg.sender;
         MockERC721 seats = new MockERC721();
         MockERC20 imd = new MockERC20();
-        MockRegistry registry = new MockRegistry();
+        MockRegistrar registry = new MockRegistrar();
         SeatVaultFactory factory = new SeatVaultFactory(
             IERC721(address(seats)), IERC20(address(imd)), address(registry), "https://api.imd.fun"
         );
@@ -37,7 +37,7 @@ contract DeployVault is Script {
         console.log("chain", block.chainid);
         console.log("MockERC721 seats", address(seats));
         console.log("MockERC20 imd", address(imd));
-        console.log("MockRegistry", address(registry));
+        console.log("MockRegistrar", address(registry));
         console.log("SeatVaultFactory", address(factory));
         console.log("SeatVault", address(vault));
         console.log("owner (deployer)", owner);

@@ -10,7 +10,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistry} from "./VaultMocks.sol";
+import {MockERC721, MockRegistrar} from "./VaultMocks.sol";
 
 /// @dev A reward token whose balance read can be switched off (an upgrade, a pause, a lie).
 contract UnavailableBalanceToken is MockERC20 {
@@ -26,12 +26,12 @@ contract UnavailableBalanceToken is MockERC20 {
     }
 }
 
-/// @dev An identity registry that safe-mints its agent NFT to the caller.
-contract SafeMintRegistry is ERC721 {
-    constructor() ERC721("Agent", "AGENT") {}
+/// @dev Some other collection that safe-mints a token into the vault.
+contract SafeMintingCollection is ERC721 {
+    constructor() ERC721("Other", "OTHER") {}
 
-    function register() external returns (uint256) {
-        _safeMint(msg.sender, 1);
+    function mintTo(address to) external returns (uint256) {
+        _safeMint(to, 1);
         return 1;
     }
 }
@@ -50,14 +50,14 @@ contract SeatVaultReviewProbes is Test {
     bytes4 internal constant INVALID = 0xffffffff;
     MockERC721 internal seats;
     MockERC20 internal reward;
-    MockRegistry internal registry;
+    MockRegistrar internal registry;
     SeatVault internal vault;
 
     function setUp() public {
         vm.warp(T0);
         seats = new MockERC721();
         reward = new MockERC20();
-        registry = new MockRegistry();
+        registry = new MockRegistrar();
         seats.mint(owner, TOKEN);
         vault = _newVault(reward, address(registry), TOKEN);
     }
@@ -166,19 +166,17 @@ contract SeatVaultReviewProbes is Test {
         assertEq(vault.approvedDigest(), second);
     }
 
-    // ------------------------------------------------------------ F4 registry that safe-mints
+    // ------------------------------------------------------------ F4 another collection may safe-mint into the vault
 
-    function test_safeMintRegistrationIsReceivableAndRescuable() public {
-        SafeMintRegistry safeRegistry = new SafeMintRegistry();
-        vault = _newVault(reward, address(safeRegistry), TOKEN);
+    function test_anotherCollectionsSafeMintIsReceivableAndRescuable() public {
+        SafeMintingCollection other = new SafeMintingCollection();
         _deposit();
+        other.mintTo(address(vault));
+        assertEq(other.ownerOf(1), address(vault));
+        assertTrue(vault.held(), "the seat bookkeeping was not touched by the other token");
         vm.prank(owner);
-        vault.registerAgent(abi.encodeCall(SafeMintRegistry.register, ()));
-        assertEq(safeRegistry.ownerOf(1), address(vault));
-        assertTrue(vault.held(), "the seat bookkeeping was not touched by the agent token");
-        vm.prank(owner);
-        vault.rescueERC721(IERC721(address(safeRegistry)), 1, owner);
-        assertEq(safeRegistry.ownerOf(1), owner);
+        vault.rescueERC721(IERC721(address(other)), 1, owner);
+        assertEq(other.ownerOf(1), owner);
         assertEq(seats.ownerOf(TOKEN), address(vault), "the seat stayed");
     }
 

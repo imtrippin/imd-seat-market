@@ -5,12 +5,14 @@ import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {SeatVault} from "../../src/SeatVault.sol";
-import {MockERC721} from "../VaultMocks.sol";
+import {MockERC721, MockRegistrar} from "../VaultMocks.sol";
 import {MockERC20} from "../Mocks.sol";
-import {SafeMintRegistry, RejectingRecipient} from "../SeatVaultReviewProbes.t.sol";
+import {RejectingRecipient} from "../SeatVaultReviewProbes.t.sol";
 import {MalformedBalanceToken} from "../SeatVaultV2Probes.t.sol";
 
-/// @dev Additional positive coverage and design witnesses; no real-chain fork or transactions.
+/// @dev Additional positive coverage and design witnesses; no real-chain fork or transactions. Registration goes
+/// through a registrar mock that behaves like IMD's Adapter8004 (the agent stays with the registrar, control follows
+/// the seat).
 contract SeatVaultRound3 is Test {
     address internal owner = makeAddr("round3-owner");
     address internal provider = makeAddr("round3-provider");
@@ -20,14 +22,14 @@ contract SeatVaultRound3 is Test {
     string internal constant RELAY = "https://relay.invalid";
     MockERC721 internal seats;
     MockERC20 internal reward;
-    SafeMintRegistry internal registry;
+    MockRegistrar internal registry;
     SeatVault internal vault;
 
     function setUp() public {
         vm.warp(1_800_000_000);
         seats = new MockERC721();
         reward = new MockERC20();
-        registry = new SafeMintRegistry();
+        registry = new MockRegistrar();
         seats.mint(owner, TOKEN);
         vault = _newVault(3000);
     }
@@ -45,48 +47,50 @@ contract SeatVaultRound3 is Test {
         vm.stopPrank();
     }
 
-    function _approveAndRegister() internal returns (bytes32 digest, bytes memory signature) {
+    function _registration() internal view returns (bytes memory) {
+        return abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(seats), TOKEN, "ipfs://agent-card");
+    }
+
+    function _approveAndRegister() internal returns (bytes32 digest, bytes memory signature, uint256 agentId) {
+        bytes memory data = _registration();
         vm.startPrank(owner);
         digest = vault.approvePairing(keccak256("round3-nonce"), uint64(vm.getBlockTimestamp() + 600), RELAY);
-        vault.registerAgent(abi.encodeCall(SafeMintRegistry.register, ()));
+        agentId = abi.decode(vault.registerAgent(data), (uint256));
         vm.stopPrank();
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(OPERATOR_KEY, digest);
         signature = abi.encodePacked(r, s, v);
     }
 
-    function test_rejectedExitWithLiveApprovalAndAgentNFTCanRetrySafely() public {
+    function test_rejectedExitWithLiveApprovalAndAgentCanRetrySafely() public {
         _deposit();
-        (bytes32 digest, bytes memory signature) = _approveAndRegister();
+        (bytes32 digest, bytes memory signature, uint256 agentId) = _approveAndRegister();
         reward.mint(address(vault), 100);
         RejectingRecipient rejector = new RejectingRecipient();
         vm.prank(owner);
         vm.expectRevert();
         vault.withdrawNFT(address(rejector));
         assertEq(seats.ownerOf(TOKEN), address(vault));
-        assertEq(registry.ownerOf(1), address(vault));
+        assertTrue(registry.isController(agentId, address(vault)));
         assertFalse(vault.ended());
         assertTrue(vault.held());
         assertEq(vault.isValidSignature(digest, signature), bytes4(0x1626ba7e));
         vm.prank(owner);
         vault.withdrawNFT(owner);
         assertEq(seats.ownerOf(TOKEN), owner);
-        assertEq(registry.ownerOf(1), address(vault));
+        assertTrue(registry.isController(agentId, owner), "control of the agent follows the seat");
         assertEq(vault.isValidSignature(digest, signature), bytes4(0xffffffff));
         assertEq(vault.accounted(reward), 0, "NFT exit intentionally did not settle");
         vm.prank(provider);
         vault.claim(reward);
         assertEq(reward.balanceOf(provider), 30);
-        vm.prank(owner);
-        vault.rescueERC721(registry, 1, owner);
-        assertEq(registry.ownerOf(1), owner);
     }
 
-    function test_providerEndWithAgentNFTAndBurningRewardReadCannotBlockExit() public {
+    function test_providerEndWithAgentAndBurningRewardReadCannotBlockExit() public {
         MalformedBalanceToken hostile = new MalformedBalanceToken();
         reward = hostile;
         vault = _newVault(3000);
         _deposit();
-        _approveAndRegister();
+        (,, uint256 agentId) = _approveAndRegister();
         hostile.setMode(3);
         vm.prank(provider);
         vault.end();
@@ -94,33 +98,32 @@ contract SeatVaultRound3 is Test {
         (bool ok,) = address(vault).call{gas: 200_000}(abi.encodeCall(SeatVault.withdrawNFT, (owner)));
         assertTrue(ok);
         assertEq(seats.ownerOf(TOKEN), owner);
-        assertEq(registry.ownerOf(1), address(vault));
+        assertTrue(registry.isController(agentId, owner));
     }
 
-    function test_registryCallsStopAtEndButRescueDoesNot() public {
+    function test_registrarCallsStopAtEndAndControlPassesWithTheSeat() public {
         _deposit();
-        _approveAndRegister();
+        (,, uint256 agentId) = _approveAndRegister();
         vm.prank(provider);
         vault.end();
+        bytes memory data = _registration();
         vm.prank(owner);
         vm.expectRevert(SeatVault.AlreadyEnded.selector);
-        vault.registerAgent(abi.encodeCall(SafeMintRegistry.register, ()));
+        vault.registerAgent(data);
+        assertTrue(registry.isController(agentId, address(vault)), "still the vault's while the seat is inside");
         vm.prank(owner);
-        vault.rescueERC721(registry, 1, owner);
-        assertEq(registry.ownerOf(1), owner);
+        vault.withdrawNFT(owner);
+        assertTrue(registry.isController(agentId, owner));
     }
 
-    function test_registryCalldataCannotAuthorizeAnAgentNFTTransfer() public {
+    function test_registrarCalldataCannotAuthorizeAnAgentTransfer() public {
         _deposit();
         _approveAndRegister();
         address delegate = makeAddr("round3-agent-delegate");
         vm.prank(owner);
-        vm.expectRevert(SeatVault.NotARegistration.selector); // only the three register selectors go through
+        vm.expectRevert(SeatVault.NotARegistration.selector); // only the registrar's register selectors go through
         vault.registerAgent(abi.encodeCall(IERC721.setApprovalForAll, (delegate, true)));
-        vm.prank(delegate);
-        vm.expectRevert();
-        registry.transferFrom(address(vault), delegate, 1);
-        assertEq(registry.ownerOf(1), address(vault));
+        assertEq(seats.ownerOf(TOKEN), address(vault));
     }
 
     function test_artifactSchemaAcceptanceCannotReplaceVaultPreflight() public {
@@ -128,7 +131,7 @@ contract SeatVaultRound3 is Test {
         vm.prank(owner);
         vm.expectRevert(SeatVault.BadExpiry.selector);
         vault.approvePairing(keccak256("too-far"), uint64(vm.getBlockTimestamp() + 7200), RELAY);
-        (bytes32 digest, bytes memory signature) = _approveAndRegister();
+        (bytes32 digest, bytes memory signature,) = _approveAndRegister();
         vm.chainId(vm.getChainId() + 1);
         assertEq(vault.isValidSignature(digest, signature), bytes4(0xffffffff));
     }
