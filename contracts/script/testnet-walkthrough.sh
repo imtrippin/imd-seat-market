@@ -15,7 +15,9 @@ case "$CHAIN" in
   *) echo "refusing: chain $CHAIN is not Sepolia (11155111) or Base Sepolia (84532)"; exit 3 ;;
 esac
 KEYS="${KEYS:-$HOME/.ssh}"   # the throwaway key files; point it at a dedicated directory if you keep them elsewhere
-PY="${REVIEW_PYTHON:-$(command -v python3 || command -v python)}"
+# the first interpreter that runs wins: REVIEW_PYTHON, then python3, then python (a present but broken python3 is skipped)
+PY=""; for c in "${REVIEW_PYTHON:-}" python3 python; do [ -n "$c" ] && "$c" -c "import sys" >/dev/null 2>&1 && { PY="$c"; break; }; done
+[ -n "$PY" ] || { echo "no working Python 3 interpreter (set REVIEW_PYTHON)"; exit 3; }
 key() { "$PY" -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['private_key'])" "$KEYS/$1.json"; }
 addr() { "$PY" -c "import json,sys; d=json.load(open(sys.argv[1]))['data']; w=d[0] if isinstance(d,list) else d; print(w['address'])" "$KEYS/$1.json"; }
 OWNER_KEY=$(key imd_sepolia_deployer); OWNER=$(addr imd_sepolia_deployer)
@@ -28,10 +30,11 @@ SETTLE="${SETTLE:-6}"   # seconds to let a load-balanced public RPC catch up bef
 # has status 1: a success receipt for some other transaction is a mismatch, not a confirmation. Returns
 # 0 = mined with status 1, 2 = reverted, 3 = the node answered with another transaction's receipt, 1 = no receipt yet.
 receipt() {
-  local hash="$1" tries="$2" out verdict i
+  local hash="$1" tries="$2" out verdict i py="${PY:-}"
+  if [ -z "$py" ]; then for c in "${REVIEW_PYTHON:-}" python3 python; do [ -n "$c" ] && "$c" -c "import sys" >/dev/null 2>&1 && { py="$c"; break; }; done; fi
   for i in $(seq 1 "$tries"); do
     if out=$(cast receipt --rpc-url "$RPC" --json "$hash" 2>/dev/null) && [ -n "$out" ] && [ "$out" != "null" ]; then
-      verdict=$(echo "$out" | "${REVIEW_PYTHON:-$(command -v python3 || command -v python)}" -c '
+      verdict=$(echo "$out" | "$py" -c '
 import json, sys
 want = sys.argv[1].lower()
 r = json.load(sys.stdin)

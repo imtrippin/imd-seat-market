@@ -46,22 +46,27 @@ contract VaultHandler is Test {
         _claim(provider);
     }
 
+    // Every guard reads the token id before `vm.prank`: the prank covers exactly one external call, and a getter
+    // evaluated inside the argument list would consume it (a real defect a reviewer caught in this handler).
     function end() external {
-        if (vault.ended() || seats.ownerOf(vault.tokenId()) != address(vault)) return;
+        uint256 id = vault.tokenId();
+        if (vault.ended() || seats.ownerOf(id) != address(vault)) return;
         vm.prank(provider);
         vault.end();
     }
 
     function withdraw() external {
-        if (seats.ownerOf(vault.tokenId()) != address(vault)) return;
+        uint256 id = vault.tokenId();
+        if (seats.ownerOf(id) != address(vault)) return;
         vm.prank(owner);
         vault.withdrawNFT(owner);
     }
 
     function redeposit() external {
-        if (seats.ownerOf(vault.tokenId()) != owner) return;
+        uint256 id = vault.tokenId();
+        if (seats.ownerOf(id) != owner) return;
         vm.prank(owner);
-        seats.transferFrom(owner, address(vault), vault.tokenId()); // a plain return after exit: still withdrawable
+        seats.transferFrom(owner, address(vault), id); // a plain return after exit: still withdrawable
     }
 
     function _claim(address party) internal {
@@ -104,6 +109,17 @@ contract SeatVaultInvariants is Test {
         vm.stopPrank();
         handler = new VaultHandler(vault, token, seats, owner, provider);
         targetContract(address(handler));
+    }
+
+    /// @dev Deterministic regression: the handler's re-deposit path must actually run (it once consumed its own
+    /// prank on a getter and silently reverted every time).
+    function test_handlerRedepositReturnsTheSeatAfterExit() public {
+        handler.withdraw();
+        assertEq(seats.ownerOf(1), owner);
+        handler.redeposit();
+        assertEq(seats.ownerOf(1), address(vault), "the plain return landed");
+        handler.withdraw();
+        assertEq(seats.ownerOf(1), owner, "and the seat is recoverable again");
     }
 
     function invariant_allocationsEqualClaimables() public view {
