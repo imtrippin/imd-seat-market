@@ -42,7 +42,7 @@ This is not a watcher that signs for every new marketplace listing or auto-disco
 
 - A vault whose owner is a contract (a multisig) cannot join a room yet: the sign-in must come from the owner address itself, and a multisig's signer key is not that address. Such owners use the manual offer strings; the console's own checks are the same on both paths.
 - Behind a reverse proxy the sign-in rate limit keys on the proxy's address, so every client shares one bucket; honour `X-Forwarded-For` only from a proxy you operate. TLS terminates at that proxy; the service itself speaks plain HTTP.
-- The room is optional: the console starts and completes a pairing without one, and the two offer strings remain the fallback.
+- The room is optional: the console starts and completes a pairing without one, and the two offer strings remain the fallback. Without a room the host's console learns of the owner's approval only from the chain, not from a transaction hash, so an unconfirmed approval is guarded by the owner's own console; the owner should not ask for a second code while an approval is pending.
 
 ## Verification
 

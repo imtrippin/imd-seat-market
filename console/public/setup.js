@@ -13,6 +13,13 @@ export function calendarEvent({ at, vault, chainId, version }) {
     'BEGIN:VALARM', 'TRIGGER:-PT10M', 'ACTION:DISPLAY', 'DESCRIPTION:NFT setup begins in ten minutes', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
 }
 
+/// Room readiness gates the host's start button only while signed into a room (also when its service is down);
+/// in manual mode the action list's own state stands. Returns null for "leave the button alone".
+export function pairingStartDisabled({ roomMode, enabled, role, bothReady, active, error }) {
+  if (!roomMode) return null;
+  return !enabled || role !== 'host' || !bothReady || active || !!error;
+}
+
 export function setupUI({ getState, getWallet, api, toast, confirmDialog, refresh }) {
   const panel = document.getElementById('setupRoom');
   let pending = false, lastState = null, receivedAt = Date.now(), reminder = '', lastHeartbeat = 0, lastActionNotice = '';
@@ -120,7 +127,8 @@ export function setupUI({ getState, getWallet, api, toast, confirmDialog, refres
       invite: async () => { try { await navigator.clipboard.writeText(`${location.origin}/#vault=${s.vault.address}`); toast('Room link copied. Both consoles must use the same setup service.'); } catch { toast('Copy the vault address into the other console', true); } },
     };
     panel.querySelectorAll('[data-setup]').forEach((b) => { b.onclick = handlers[b.dataset.setup]; });
-    document.querySelectorAll('[data-action="pairing-start"]').forEach((b) => { b.disabled = !enabled || role !== 'host' || !r?.bothReady || active || !!setup.error; });
+    const startDisabled = pairingStartDisabled({ roomMode: !!setup.account && mine(), enabled, role, bothReady: !!r?.bothReady, active: !!active, error: setup.error });
+    if (startDisabled !== null) document.querySelectorAll('[data-action="pairing-start"]').forEach((b) => { b.disabled = startDisabled; });
     if (joined && active && s.pairing?.artifact && !finished) {
       const notice = `${s.vault.address}:${s.pairing.artifact.digest}:${approved}`;
       if (lastActionNotice !== notice) {

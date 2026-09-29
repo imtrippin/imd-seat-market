@@ -27,7 +27,7 @@ export class Session {
     this.print = log;
     this.operator = operatorKey ? privateKeyToAccount(operatorKey) : null;
     this.state = {
-      vault: null, hostingOffer: null, pairing: { phase: 'none' }, registration: {}, txs: [], log: [],
+      vault: null, hostingOffer: null, pairing: { phase: 'none' }, registration: {}, txs: [], log: [], pendingApprovals: {},
     };
     this.snapshot = null;
     this.imdView = { standing: null, standingAt: 0, standingStatus: null, workerStanding: null, pairStatus: null, lastError: null };
@@ -129,7 +129,7 @@ export class Session {
 
   publicPairing() {
     const p = this.state.pairing;
-    return { phase: p.phase, code: p.code || null, artifact: p.artifact || null, offer: p.offer || null, codeExpiresAt: p.codeExpiresAt || null, completed: !!p.completed, enrolledSeen: !!p.enrolledSeen, completion: p.completion || null, pendingHashes: p.pendingHashes || [] };
+    return { phase: p.phase, code: p.code || null, artifact: p.artifact || null, offer: p.offer || null, codeExpiresAt: p.codeExpiresAt || null, completed: !!p.completed, enrolledSeen: !!p.enrolledSeen, completion: p.completion || null, pendingHashes: this.state.vault ? [...this.pendingApprovals(this.state.vault)] : [] };
   }
 
   // ---------------------------------------------------------------- selection
@@ -157,7 +157,7 @@ export class Session {
 
   reset() {
     this.setup.clear();
-    this.state = { vault: null, hostingOffer: null, pairing: { phase: 'none' }, registration: {}, txs: [], log: [] };
+    this.state = { vault: null, hostingOffer: null, pairing: { phase: 'none' }, registration: {}, txs: [], log: [], pendingApprovals: {} };
     this.snapshot = null;
     this.imdView = { standing: null, standingAt: 0, standingStatus: null, workerStanding: null, pairStatus: null, lastError: null };
     this.note('console', 'session reset');
@@ -231,13 +231,31 @@ export class Session {
     if (!HASH.test(String(hash || ''))) throw new Error('bad transaction hash');
     const entry = { action, hash, from: from || null, status: 'pending', at: new Date(this.now()).toISOString() };
     this.state.txs.push(entry);
-    if (action === 'approvePairing') {
-      const list = (this.state.pairing.pendingHashes ||= []);
-      if (!list.includes(hash)) list.push(hash); // a fresh attempt must not start over an unresolved approval
-    }
+    if (action === 'approvePairing') { entry.vault = this.state.vault; this.notePendingApproval(hash); }
     this.note(from ? this.roleOf(from) : 'wallet', `${action} sent: ${hash}`);
     this.track(entry).catch((e) => { entry.status = 'error'; entry.error = e.message; this.note('console', `${action} ${hash}: ${e.message}`); });
     return entry;
+  }
+
+  /// Unresolved owner approvals, per vault, kept apart from the replaceable offer state so that re-importing or
+  /// replacing an offer, re-selecting the vault or restarting the console cannot forget one. Pruned only when a
+  /// receipt is seen. A console can guard only hashes it was told about (its own sends, or the room's reports).
+  pendingApprovals(vault) {
+    const ledger = (this.state.pendingApprovals ||= {});
+    return (ledger[String(vault || '').toLowerCase()] ||= []);
+  }
+
+  notePendingApproval(hash, vault = this.state.vault) {
+    if (!vault || !HASH.test(String(hash || ''))) return;
+    const list = this.pendingApprovals(vault);
+    if (!list.includes(hash)) { list.push(hash); this.save(); }
+  }
+
+  resolvePendingApproval(hash, vault = this.state.vault) {
+    if (!vault) return;
+    const ledger = (this.state.pendingApprovals ||= {});
+    const key = String(vault).toLowerCase();
+    if (ledger[key]) ledger[key] = ledger[key].filter((h) => h !== hash);
   }
 
   roleOf(address) {
@@ -254,9 +272,7 @@ export class Session {
     const receipt = await waitReceipt(this.client, entry.hash);
     entry.status = receipt.status === 'success' ? 'confirmed' : 'reverted';
     entry.block = Number(receipt.blockNumber);
-    if (entry.action === 'approvePairing' && this.state.pairing.pendingHashes) {
-      this.state.pairing.pendingHashes = this.state.pairing.pendingHashes.filter((h) => h !== entry.hash);
-    }
+    if (entry.action === 'approvePairing') this.resolvePendingApproval(entry.hash, entry.vault);
     const events = decodeLogs(receipt);
     entry.events = events;
     this.note('chain', `${entry.action} ${entry.status} in block ${entry.block}${events.length ? ': ' + events.map((e) => e.name).join(', ') : ''}`);
@@ -290,7 +306,7 @@ export class Session {
     if (!v.held || v.ended) throw new Error('the seat must be recorded as held and the agreement open');
     const key = '0x' + String(deviceKey || v.deviceKey).replace(/^0x/, '').toLowerCase();
     if (key !== v.deviceKey.toLowerCase()) throw new Error(`that device key is not the vault's (${v.deviceKey}); the owner can change it with setDeviceKey`);
-    for (const hash of this.state.pairing.pendingHashes || []) {
+    for (const hash of this.pendingApprovals(v.address)) {
       try { await this.client.getTransactionReceipt({ hash }); } catch { throw new Error('An approval transaction is unresolved; check the wallet before starting again'); }
     }
     // With a joined setup room the attempt is reserved there and the offer is shared through it; without one the

@@ -55,9 +55,7 @@ export class Setup {
       if (action === 'heartbeat' && body.active === false && this.armedUntil > Date.now()) return this.view();
       if (action === 'pending') {
         if (!/^0x[0-9a-fA-F]{64}$/.test(body.hash) || this.auth.role !== 'owner') throw new Error('Only the owner can record an approval hash');
-        s.state.pairing.pendingHashes ||= [];
-        if (!s.state.pairing.pendingHashes.includes(body.hash)) s.state.pairing.pendingHashes.push(body.hash);
-        s.save();
+        s.notePendingApproval(body.hash);
       }
       this.room = await this.request(action, body);
     }

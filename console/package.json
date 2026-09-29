@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.mjs",
     "rooms": "node rooms-server.mjs",
-    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/rooms.test.mjs test/e2e-anvil.test.mjs test/setup-e2e.test.mjs",
+    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/setup-ui.test.mjs test/rooms.test.mjs test/e2e-anvil.test.mjs test/setup-e2e.test.mjs",
     "abi": "node scripts/sync-abi.mjs"
   },
   "dependencies": {

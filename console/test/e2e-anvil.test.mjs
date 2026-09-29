@@ -39,10 +39,25 @@ test('the console walks one agreement from creation to exit against anvil and a 
     assert.match(p.offer, /^seatpair1:/);
     await api('/api/pairing/import', { offer: p.offer });
     await assert.rejects(api('/api/pairing/complete', {}), /not approved this digest/);
+    // hold the owner's approval unmined: no fresh code may be requested, even after re-importing the same offer
+    const startsBefore = imd.state.calls.filter((c) => c.path === '/pair/start').length;
+    await pub.request({ method: 'anvil_setIntervalMining', params: [0] });
+    await pub.request({ method: 'anvil_setAutomine', params: [false] });
     await send('owner', 'approvePairing');
+    s = await stateIs((x) => x.pairing.pendingHashes.length === 1, 'the approval to be recorded as pending');
+    await assert.rejects(api('/api/pairing/start', { deviceKey: DEVICE_KEY }), /unresolved/);
+    await api('/api/pairing/import', { offer: p.offer });
+    s = await api('/api/state');
+    assert.equal(s.pairing.pendingHashes.length, 1, 're-importing the offer keeps the unresolved approval');
+    await assert.rejects(api('/api/pairing/start', { deviceKey: DEVICE_KEY }), /unresolved/);
+    assert.equal(imd.state.calls.filter((c) => c.path === '/pair/start').length, startsBefore, 'no code was requested while the approval was pending');
+    await pub.request({ method: 'anvil_setAutomine', params: [true] });
+    await pub.request({ method: 'anvil_mine', params: ['0x1'] });
+    await pub.request({ method: 'anvil_setIntervalMining', params: [1] });
     s = await stateIs((x) => x.vault.approvedDigest.toLowerCase() === p.artifact.digest.toLowerCase(), 'the pairing approval');
     assert.deepEqual(primary(s.derived.host), ['pairing-complete']);
     s = await stateIs((x) => x.pairing.pendingHashes.length === 0, 'the approval hash to be pruned once mined');
+    assert.equal(s.setup.room, null, 'still no room: the manual path handled the whole pairing');
     const done = await api('/api/pairing/complete', {});
     assert.equal(done.completed, true);
     assert.ok(imd.state.calls.some((c) => c.path === '/pair/complete'));

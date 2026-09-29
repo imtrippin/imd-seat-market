@@ -114,7 +114,8 @@ const handlers = {
   }),
   'pairing-start': () => showForm('Start a pairing', [['deviceKey', 'Worker device key (must be the vault\'s)', state.vault?.deviceKey || '']], async (f) => {
     const p = await api('/api/pairing/start', { deviceKey: f.deviceKey.trim() });
-    toast('Fresh pairing code shared with the owner. Waiting for approval.');
+    if (state.setup?.account) toast('Fresh pairing code shared with the owner. Waiting for approval.');
+    else showText('Give this pairing offer to the owner now (the code lasts five minutes); the owner must approve it on chain within that window', p.offer);
     await refreshState();
   }),
   'pairing-offer': () => showForm("Import the host's pairing offer", [['offer', 'seatpair1:…', '']], async (f) => { state = { ...state, pairing: await api('/api/pairing/import', { offer: f.offer }) }; toast('Pairing offer imported'); render(); }),
