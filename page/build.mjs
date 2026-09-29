@@ -1,6 +1,6 @@
 // Builds dist/ from src/ with the chain constants of config.json baked in. `--check` fails when dist/ is stale.
 import { build } from 'esbuild';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, copyFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseConfig } from '../host/lib/config.js';
@@ -16,6 +16,7 @@ await build({
   format: 'esm',
   target: ['es2022'],
   platform: 'browser',
+  nodePaths: [join(here, 'node_modules')], // bare imports in ../host/lib resolve against the page's own pinned packages
   minify: false,
   sourcemap: false,
   legalComments: 'none',
@@ -33,5 +34,4 @@ if (check) {
   process.exit(stale ? 1 : 0);
 }
 const size = readFileSync(join(outdir, 'app.js')).length;
-writeFileSync(join(outdir, 'BUILD.txt'), `built ${new Date().toISOString()} chain ${config.chainId} factory ${config.factory}\n`);
 console.log(`built dist/app.js (${Math.round(size / 1024)} KB) for chain ${config.chainId}, factory ${config.factory}`);
