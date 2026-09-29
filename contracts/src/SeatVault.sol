@@ -81,7 +81,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     event Settled(IERC20 indexed token, uint256 received, uint256 ownerShare, uint256 providerShare);
     event Claimed(IERC20 indexed token, address indexed party, uint256 amount);
     event Ended(address indexed by, uint64 endedAt);
-    event AgentRegistered(bytes data);
+    event AgentRegistered(uint256 indexed agentId, bytes data);
 
     error NotOwner();
     error NotParty();
@@ -263,12 +263,16 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     /// @notice The agent registration IMD asks the seat holder to send (`GET /agents/register-intent` returns the
     /// calldata: `register(0, collection, tokenId, agentURI)` to IMD's registrar). Owner-only, while the seat is
     /// held and the agreement is open, to the pinned registrar, only its two `register` functions, and only for
-    /// this vault's own seat as an ERC-721 (`standard` 0). Anything else (URI or metadata updates, wallet changes, approvals) is refused, so
-    /// calldata proposed by a third party cannot do more than register. If the registrar's implementation changes
-    /// its registration ABI, this fails closed and needs a new vault version. The registrar keeps the agent NFT
-    /// itself and control of the agent follows whoever owns the seat, so it leaves with the seat on withdrawal;
-    /// nothing needs rescuing. IMD's off-chain bind of seat to agent (`POST /agents/bind`) is a separate step.
-    function registerAgent(bytes calldata data) external nonReentrant returns (bytes memory result) {
+    /// this vault's own seat as an ERC-721 (`standard` 0). Anything else (URI or metadata updates, wallet changes,
+    /// approvals) is refused, so calldata proposed by a third party cannot do more than register this seat.
+    /// That is the whole guarantee. The registrar is an external dependency behind an upgradeable proxy: a new
+    /// implementation may reject these selectors, accept them with different behaviour, or accept them through a
+    /// fallback, and this function can only require the call to succeed and to return one word, the agent id it
+    /// records. What a registration means under the implementation reviewed on 2026-09-29 (the agent NFT stays
+    /// with the registrar, control of the agent follows the seat's owner, no ETH fee) is that implementation's
+    /// behaviour, not something enforced here; compare the live implementation with the reviewed one before use
+    /// and check the agent after the receipt. IMD's off-chain bind (`POST /agents/bind`) is a separate step.
+    function registerAgent(bytes calldata data) external nonReentrant returns (uint256 agentId) {
         if (msg.sender != owner) revert NotOwner();
         if (ended) revert AlreadyEnded();
         if (!held) revert NotHeld();
@@ -278,10 +282,10 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         if (data.length < 4 + 3 * 32) revert InvalidTerms();
         (uint8 standard, address tokenContract, uint256 boundTokenId) = abi.decode(data[4:], (uint8, address, uint256));
         if (standard != 0 || tokenContract != address(collection) || boundTokenId != tokenId) revert WrongToken();
-        bool ok;
-        (ok, result) = registrar.call(data);
-        if (!ok) revert RegistryCallFailed();
-        emit AgentRegistered(data);
+        (bool ok, bytes memory result) = registrar.call(data);
+        if (!ok || result.length != 32) revert RegistryCallFailed();
+        agentId = abi.decode(result, (uint256));
+        emit AgentRegistered(agentId, data);
     }
 
     // ---------------------------------------------------------------- rewards
@@ -325,7 +329,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         return known > balance ? known - balance : 0;
     }
 
-    /// @notice Moves an NFT that is not the seat (an agent registry token, or a mistake) to `to`. The reward token
+    /// @notice Moves an NFT that is not the seat (another collection's token, or a mistake) to `to`. The reward token
     /// is never a rescue target: rewards leave only through `claim`.
     function rescueERC721(IERC721 other, uint256 id, address to) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();

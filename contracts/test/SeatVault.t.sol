@@ -309,16 +309,18 @@ contract SeatVaultTest is Test {
         assertEq(vault.isValidSignature(digest, _sign(OPERATOR_KEY, digest)), INVALID, "NFT gone, approval dead");
     }
 
-    function test_registerAgentOnlyOwnerOnlyRegistry() public {
+    function test_registerAgentOnlyOwnerOnlyRegistrar() public {
         _deposit();
         bytes memory data =
             abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(seats), TOKEN, "ipfs://agent-card");
         vm.prank(provider);
         vm.expectRevert(SeatVault.NotOwner.selector);
         vault.registerAgent(data);
+        vm.expectEmit(true, false, false, true, address(vault));
+        emit SeatVault.AgentRegistered(1, data);
         vm.prank(owner);
-        vault.registerAgent(data);
-        assertEq(registry.lastCaller(), address(vault), "the holder, not the owner, is the registry's caller");
+        assertEq(vault.registerAgent(data), 1, "the registrar's agent id is returned and recorded");
+        assertEq(registry.lastCaller(), address(vault), "the holder, not the owner, is the registrar's caller");
         assertEq(registry.lastData(), data);
         registry.setFail(true);
         vm.prank(owner);

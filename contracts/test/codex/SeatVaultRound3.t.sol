@@ -55,7 +55,7 @@ contract SeatVaultRound3 is Test {
         bytes memory data = _registration();
         vm.startPrank(owner);
         digest = vault.approvePairing(keccak256("round3-nonce"), uint64(vm.getBlockTimestamp() + 600), RELAY);
-        agentId = abi.decode(vault.registerAgent(data), (uint256));
+        agentId = vault.registerAgent(data);
         vm.stopPrank();
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(OPERATOR_KEY, digest);
         signature = abi.encodePacked(r, s, v);

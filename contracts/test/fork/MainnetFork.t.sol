@@ -56,7 +56,8 @@ contract MainnetFork is Test {
         forked = true;
     }
 
-    /// @dev What `GET /agents/register-intent?tokenId=<seat>` returns for a seat: `register(0, collection, seat, uri)`.
+    /// @dev Calldata built locally in the format observed from `GET /agents/register-intent?tokenId=<seat>` (saved
+    /// fixture, 2026-09-29): `register(0, collection, seat, uri)`. Not fetched from the live endpoint.
     function _registerIntent() internal view returns (bytes memory) {
         string memory uri = string.concat("https://api.imd.fun/agents/by-token/", vm.toString(seat), ".json");
         return abi.encodeWithSelector(vault.REGISTER_SELECTOR(), uint8(0), address(SEATS), seat, uri);
@@ -99,8 +100,7 @@ contract MainnetFork is Test {
         // registration through the vault with IMD's real register-intent calldata, against the real registrar
         bytes memory intent = _registerIntent();
         vm.prank(holder);
-        bytes memory result = vault.registerAgent(intent);
-        uint256 agentId = abi.decode(result, (uint256));
+        uint256 agentId = vault.registerAgent(intent);
         emit log_named_uint("agent id registered on the fork", agentId);
         IRegistrar registrar = IRegistrar(REGISTRAR);
         assertEq(registrar.ownerOf(agentId), REGISTRAR, "the registrar keeps the agent NFT");

@@ -17,8 +17,10 @@ contract MockERC721 is ERC721 {
 
 /// @dev Stands in for IMD's registrar (`Adapter8004`, verified source read 2026-09-29): `register(uint8 standard,
 /// address tokenContract, uint256 tokenId, string agentURI)`, with or without metadata entries, may be called only by
-/// the token's current owner; the ERC-8004 agent it creates stays with the registrar, and control of the agent
-/// follows whoever owns the bound token. Records the last call and can be told to refuse.
+/// the token's current owner; the reserved binding metadata key is refused; the ERC-8004 agent it creates stays with
+/// the registrar, whose wallet entry is cleared again; control of the agent follows whoever owns the bound token.
+/// Records the last call, can be told to refuse outright, or to fail after the agent was minted (a downstream
+/// registry write failing), which must unwind the whole registration.
 contract MockRegistrar {
     struct Binding {
         address tokenContract;
@@ -30,27 +32,42 @@ contract MockRegistrar {
         bytes metadataValue;
     }
 
+    string public constant BINDING_KEY = "agent-binding";
     address public lastCaller;
     bytes public lastData;
     bool public shouldFail;
+    bool public shouldFailAfterRegister;
     uint256 public agentCount;
     mapping(uint256 => Binding) public bindings;
+    mapping(uint256 => address) public agentWallet;
+    mapping(uint256 => bytes) public bindingMetadata;
 
     error NotController(address account);
+    error ReservedMetadataKey();
     error Refused();
+    error DownstreamRefused();
 
     function setFail(bool fail) external {
         shouldFail = fail;
+    }
+
+    function setFailAfterRegister(bool fail) external {
+        shouldFailAfterRegister = fail;
     }
 
     function register(uint8, address tokenContract, uint256 tokenId, string calldata) external returns (uint256) {
         return _register(tokenContract, tokenId);
     }
 
-    function register(uint8, address tokenContract, uint256 tokenId, string calldata, MetadataEntry[] calldata)
+    function register(uint8, address tokenContract, uint256 tokenId, string calldata, MetadataEntry[] calldata entries)
         external
         returns (uint256)
     {
+        for (uint256 i; i < entries.length; ++i) {
+            if (keccak256(bytes(entries[i].metadataKey)) == keccak256(bytes(BINDING_KEY))) {
+                revert ReservedMetadataKey();
+            }
+        }
         return _register(tokenContract, tokenId);
     }
 
@@ -66,14 +83,27 @@ contract MockRegistrar {
         return address(this);
     }
 
+    function getAgentWallet(uint256 agentId) external view returns (address) {
+        return agentWallet[agentId];
+    }
+
     function _register(address tokenContract, uint256 tokenId) internal returns (uint256 agentId) {
         if (shouldFail) revert Refused();
         if (IERC721(tokenContract).ownerOf(tokenId) != msg.sender) revert NotController(msg.sender);
         lastCaller = msg.sender;
         lastData = msg.data;
-        agentId = ++agentCount;
+        agentId = ++agentCount; // the registry mints the agent to the registrar
+        agentWallet[agentId] = address(this); // and records the minter as its wallet
         bindings[agentId] = Binding(tokenContract, tokenId);
+        if (shouldFailAfterRegister) revert DownstreamRefused(); // a later registry write fails
+        bindingMetadata[agentId] = abi.encodePacked(address(this)); // the registrar's own binding record
+        agentWallet[agentId] = address(0); // and it clears the wallet again
     }
+}
+
+/// @dev A registrar implementation that accepts any call through a bare fallback and registers nothing.
+contract SilentRegistrar {
+    fallback() external {}
 }
 
 /// @dev Reward token that re-enters the vault from inside every transfer and counts guard rejections.

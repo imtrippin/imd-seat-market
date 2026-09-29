@@ -10,7 +10,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistrar} from "./VaultMocks.sol";
+import {MockERC721, MockRegistrar, SilentRegistrar} from "./VaultMocks.sol";
 
 /// @dev A seat collection with the pre-standard `transfer(address,uint256)` some old collections still expose.
 contract LegacyTransferCollection is ERC721 {
@@ -210,7 +210,7 @@ contract SeatVaultSwarmProbes is Test {
         vault.registerAgent(otherStandard);
         vm.expectRevert(SeatVault.InvalidTerms.selector);
         vault.registerAgent(tooShort);
-        uint256 agentId = abi.decode(vault.registerAgent(good), (uint256));
+        uint256 agentId = vault.registerAgent(good);
         vm.stopPrank();
         assertEq(registry.lastCaller(), address(vault), "the holder, the vault, is the registrar's caller");
         assertEq(registry.ownerOf(agentId), address(registry), "the registrar keeps the agent NFT");
@@ -233,13 +233,71 @@ contract SeatVaultSwarmProbes is Test {
         _deposit(vault);
         bytes memory data = _registration(1);
         vm.prank(owner);
-        uint256 agentId = abi.decode(vault.registerAgent(data), (uint256));
+        uint256 agentId = vault.registerAgent(data);
         assertTrue(registry.isController(agentId, address(vault)));
         assertFalse(registry.isController(agentId, owner));
         vm.prank(owner);
         vault.withdrawNFT(owner);
         assertTrue(registry.isController(agentId, owner), "control follows the seat out of the vault");
         assertFalse(registry.isController(agentId, address(vault)));
+    }
+
+    function test_reservedBindingMetadataIsRefusedByTheRegistrar() public {
+        _deposit(vault);
+        MockRegistrar.MetadataEntry[] memory entries = new MockRegistrar.MetadataEntry[](1);
+        entries[0] = MockRegistrar.MetadataEntry(registry.BINDING_KEY(), hex"abcd");
+        bytes memory data = abi.encodeWithSelector(
+            vault.REGISTER_META_SELECTOR(), uint8(0), address(seats), uint256(1), "ipfs://agent-card", entries
+        );
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.RegistryCallFailed.selector);
+        vault.registerAgent(data);
+        assertEq(registry.agentCount(), 0, "no agent was created");
+    }
+
+    function test_downstreamRegistrationFailureUnwindsAndCannotBlockExit() public {
+        _deposit(vault);
+        registry.setFailAfterRegister(true);
+        bytes memory data = _registration(1);
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.RegistryCallFailed.selector);
+        vault.registerAgent(data);
+        assertEq(registry.agentCount(), 0, "the failed registration left nothing behind");
+        registry.setFailAfterRegister(false);
+        vm.prank(owner);
+        uint256 agentId = vault.registerAgent(data);
+        assertEq(registry.getAgentWallet(agentId), address(0), "the registrar clears the agent wallet");
+        assertEq(registry.bindingMetadata(agentId), abi.encodePacked(address(registry)));
+        vm.prank(owner);
+        vault.withdrawNFT(owner);
+        assertEq(seats.ownerOf(1), owner);
+    }
+
+    function test_registrarMustReturnTheAgentId() public {
+        // a registrar implementation that swallows the call through a bare fallback registers nothing; the vault
+        // refuses its empty answer (a shape check, not proof of what a registration meant)
+        SilentRegistrar silent = new SilentRegistrar();
+        SeatVault quiet = new SeatVault(
+            owner,
+            provider,
+            vm.addr(OPERATOR_KEY),
+            seats,
+            1,
+            reward,
+            3000,
+            keccak256("swarm-device"),
+            address(silent),
+            RELAY
+        );
+        _deposit(quiet);
+        bytes memory data = _registration(1);
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.RegistryCallFailed.selector);
+        quiet.registerAgent(data);
+        assertEq(seats.ownerOf(1), address(quiet));
+        vm.prank(owner);
+        quiet.withdrawNFT(owner);
+        assertEq(seats.ownerOf(1), owner);
     }
 
     // ------------------------------------------------------------ F8: the listed coverage gaps
