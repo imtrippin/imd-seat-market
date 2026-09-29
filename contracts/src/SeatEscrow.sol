@@ -316,11 +316,14 @@ contract SeatEscrow is ReentrancyGuard {
         if (amount > MAX_AMOUNT) revert AmountTooLarge();
     }
 
-    /// @dev Pulls exactly `amount`; tokens whose transfers are inexact are not supported.
+    /// @dev Pulls exactly `amount`: the sender must lose it and this contract must receive it.
     function _pullExact(IERC20 asset, address from, uint256 amount) internal {
         uint256 before = asset.balanceOf(address(this));
+        uint256 fromBefore = asset.balanceOf(from);
         asset.safeTransferFrom(from, address(this), amount);
-        if (asset.balanceOf(address(this)) - before != amount) revert UnsupportedToken();
+        if (asset.balanceOf(address(this)) - before != amount || fromBefore - asset.balanceOf(from) != amount) {
+            revert UnsupportedToken();
+        }
     }
 
     /// @dev Sends exactly `amount`: this contract's balance must fall by `amount` (so a token that taxes the sender

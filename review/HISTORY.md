@@ -38,6 +38,10 @@ Each item below says which kind of evidence supports it.
 - **Verified locally.** 67 focused tests (2 new), the 28-check self-test, Codex's 12 round-three probes (all four intended failures now pass), 85 Foundry tests across 8 suites, `forge fmt --check` clean. Details and the worked pricing example: `claude-response-codex-vault-v3-2026-09-28.md` (local).
 - **Not changed.** Contracts, both UI versions, and the VAULT-DESIGN wording items from the review (queued). The live IMD integration prerequisites are unchanged and still unverified.
 
+## Incoming-transfer fix (2026-09-29)
+
+The 2026-09-29 final-readiness reviews also identified an incoming sender-surcharge discrepancy in the rental escrow. After explicit owner approval, Codex added the sender-debit check to `_pullExact` and four regressions covering initial deposit, top-up, payFee and post-exit payShare. Each test failed before the fix and passes afterward, checks complete rollback on rejection and succeeds when ordinary exact-transfer behavior is restored. The full Foundry suite passes 89 tests across 8 suites; build, gas report and format checks pass. All 79 Node tests and both legacy-model fuzz seeds also pass. The UI and pricing model were not changed. Source publication, paid review and live integration remain separate steps.
+
 ## What none of this establishes
 
-Static reviews and a JavaScript fuzz do not audit a contract that does not exist yet. Role switching is unauthenticated, acknowledgments are checkboxes rather than signatures, and arrivals, transfers and disconnects are simulation controls. The reward figures above are three dated distributions, not an income schedule.
+These reviews and local tests do not constitute a production audit or establish live IMD compatibility. In the legacy JavaScript simulation, role switching is unauthenticated, acknowledgments are checkboxes rather than signatures, and arrivals, transfers and disconnects are simulation controls. The reward figures above are three dated distributions, not an income schedule.

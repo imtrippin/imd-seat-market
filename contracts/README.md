@@ -41,14 +41,16 @@ script/Deploy.s.sol                testnet deployment of the mock token and the 
 
 ```text
 forge build
-forge test              # 85 tests across 8 suites (unit, fuzz, review probes, round-3 probes; the invariant suite counts as one grouped test, 64 runs x 64 calls)
+forge test              # 89 tests across 8 suites (unit, fuzz, review probes, round-3 probes; the invariant suite counts as one grouped test, 64 runs x 64 calls)
 forge test --gas-report
 forge fmt --check src test script
 ```
 
 Foundry 1.8.3 is the pinned toolchain (the same release the IMD verifier runs). Dependencies are git submodules pinned in `foundry.lock`: `lib/openzeppelin-contracts` v5.4.0, `lib/forge-std` v1.16.2.
 
-## Gas (unit suite, `forge test --gas-report`)
+## Gas (historical unit suite, `forge test --gas-report`)
+
+These figures predate the additional incoming sender-balance check on 2026-09-29. Generate a fresh gas report for the current source before estimating transaction costs.
 
 | Function | Typical | Max |
 | --- | ---: | ---: |
@@ -64,6 +66,7 @@ Constant per call; nothing grows with the agreement's history.
 
 ## Review history
 
+- 2026-09-29, Codex and Claude final-readiness reviews: incoming sender-surcharge tokens were accepted despite the documented exact-amount guarantee. Fixed after owner approval: `_pullExact` checks both the owner's debit and the escrow's receipt. Four regressions in `test/SeatEscrowV2Probes.t.sol` cover initial deposit, top-up, fee payment and share payment after exit, including full rollback of balances, allowance and both agreement ledgers. All four failed before the fix and pass after it; the full Foundry suite passes 89 tests. The supported-asset assumptions remain necessary.
 - 2026-09-28, Codex, first review (floor model): two medium findings (oversized-acknowledgment overflow; outgoing transfers not checked for the exact amount), both fixed the same day; its probes that still apply live in `test/SeatEscrowReviewProbes.t.sol`. Report and original tests kept locally under `review/`.
 - 2026-09-28, Codex, second review (rental model): B1 medium, claims and refunds could succeed while delivering less with a recipient-tax token (fixed: `_pushExact` now checks the recipient side too); B2 low, `payFee` and `draw` bypassed the 2^128 claim cap (fixed: every path that grows the claim checks it); T1 low, a refund invariant was a tautology (replaced by exact per-refund and per-draw checks); P1 medium prerequisite, pooled backing needs a fixed-balance honest asset (documented above); D1 low, the one-sentence rule overstated (rewritten); P2 low, the deploy script now refuses any chain but Sepolia. Its reproductions became regressions in `test/SeatEscrowV2Probes.t.sol`.
 

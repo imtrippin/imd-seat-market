@@ -35,6 +35,20 @@ contract BalanceLossToken is MockERC20 {
     }
 }
 
+/// @dev Delivers the full transfer but optionally burns another 1% from the sender.
+contract IncomingSenderSurchargeToken is MockERC20 {
+    address public chargedSender;
+
+    function setChargedSender(address sender) external {
+        chargedSender = sender;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        super._update(from, to, value);
+        if (from == chargedSender && to != address(0)) super._update(from, address(0), value / 100);
+    }
+}
+
 contract SeatEscrowV2Probes is Test {
     SeatEscrow internal escrow;
     MockERC20 internal token;
@@ -70,6 +84,74 @@ contract SeatEscrowV2Probes is Test {
     }
 
     // ------------------------------------------------------------ regressions for the review findings
+
+    function test_regression_initialDepositRejectsIncomingSenderSurcharge() public {
+        _checkIncomingSurcharge(0);
+    }
+
+    function test_regression_topUpRejectsIncomingSenderSurcharge() public {
+        _checkIncomingSurcharge(1);
+    }
+
+    function test_regression_payFeeRejectsIncomingSenderSurcharge() public {
+        _checkIncomingSurcharge(2);
+    }
+
+    function test_regression_payShareAfterExitRejectsIncomingSenderSurcharge() public {
+        _checkIncomingSurcharge(3);
+    }
+
+    function _checkIncomingSurcharge(uint8 operation) internal {
+        IncomingSenderSurchargeToken taxed = new IncomingSenderSurchargeToken();
+        _useToken(taxed);
+        uint256 id;
+        if (operation == 0) {
+            vm.prank(provider);
+            id = escrow.propose(owner, provider, token, 100, 2000, 100, DOC);
+        } else {
+            id = _active(100, 100);
+        }
+        uint256 other = _active(0, 200);
+        vm.warp(T0 + DAY);
+        if (operation == 3) {
+            vm.prank(owner);
+            escrow.end(id);
+        }
+        vm.prank(owner);
+        token.approve(address(escrow), 500);
+        taxed.setChargedSender(owner);
+        bytes memory ledgerBefore = abi.encode(escrow.stateOf(id), escrow.stateOf(other));
+        uint256 ownerBefore = token.balanceOf(owner);
+        uint256 poolBefore = token.balanceOf(address(escrow));
+        uint256 supplyBefore = token.totalSupply();
+
+        vm.expectRevert(SeatEscrow.UnsupportedToken.selector);
+        vm.prank(owner);
+        if (operation < 2) escrow.deposit(id, 100);
+        else if (operation == 2) escrow.payFee(id, 100);
+        else escrow.payShare(id, 100, keccak256("incoming surcharge regression"));
+
+        assertEq(abi.encode(escrow.stateOf(id), escrow.stateOf(other)), ledgerBefore, "both ledgers roll back");
+        assertEq(token.balanceOf(owner), ownerBefore, "sender debit rolls back");
+        assertEq(token.balanceOf(address(escrow)), poolBefore, "pooled backing is unchanged");
+        assertEq(token.totalSupply(), supplyBefore, "surcharge burn rolls back");
+        assertEq(token.allowance(owner, address(escrow)), 500, "allowance consumption rolls back");
+
+        // The same action succeeds once ordinary exact-transfer behavior is restored.
+        taxed.setChargedSender(address(0));
+        vm.prank(owner);
+        if (operation < 2) escrow.deposit(id, 100);
+        else if (operation == 2) escrow.payFee(id, 100);
+        else escrow.payShare(id, 100, keccak256("incoming surcharge regression"));
+        assertEq(token.balanceOf(owner), ownerBefore - 100);
+        assertEq(token.balanceOf(address(escrow)), poolBefore + 100);
+        assertEq(token.allowance(owner, address(escrow)), 400);
+        assertEq(token.totalSupply(), supplyBefore);
+        assertEq(escrow.stateOf(other).reserve, 200);
+        assertEq(escrow.stateOf(id).providerClaim, operation < 2 ? 0 : 100);
+        assertEq(escrow.stateOf(id).feeCredited, operation == 2 ? 100 : 0);
+        assertEq(escrow.stateOf(id).reserve, operation == 1 ? 200 : 100);
+    }
 
     function test_regression_claimRefusesShortDeliveryRecipientTax() public {
         RecipientTaxToken taxed = new RecipientTaxToken();
