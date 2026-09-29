@@ -62,7 +62,9 @@ From `contracts/`: `forge build`, `forge test`, `forge test --gas-report`, `forg
 
 From the repository root: `node --test test/pair-vault.test.mjs test/codex/vault-round3.test.mjs` and `node contracts/script/pair-vault.mjs --selftest`.
 
-Expected on the reviewed commit: 59 Foundry tests across 6 suites (including one handler-driven invariant suite) and 26 Node script tests. Report actual results and skips rather than assuming these counts.
+Optional, read-only: `MAINNET_RPC_URL=<mainnet rpc> forge test --match-contract MainnetFork -vv` runs `contracts/test/fork/MainnetFork.t.sol` against the real IMD collection, token and registry on a fork (the harness impersonates the seat's wallet; nothing is broadcast). Without the variable those tests skip.
+
+Expected on the reviewed commit: 63 Foundry tests across 7 suites (including one handler-driven invariant suite and the 4 fork tests, which skip without an RPC) and 26 Node script tests. Report actual results and skips rather than assuming these counts.
 
 ## Finding format and deliverables
 

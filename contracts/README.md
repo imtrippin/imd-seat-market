@@ -33,6 +33,7 @@ test/SeatVaultV2Probes.t.sol      regressions from the second round (malformed r
 test/codex/SeatVaultRound3.t.sol  the third round's probes
 test/SeatVaultSwarmProbes.t.sol   regressions and coverage cases from the IMD swarm review (job 11c42a8c)
 test/SeatVaultInvariants.t.sol    handler-driven invariants over the reward ledger and the seat's whereabouts
+test/fork/MainnetFork.t.sol       mainnet fork rehearsal against the real collection, token and registry (needs MAINNET_RPC_URL)
 test/Mocks.sol, test/VaultMocks.sol  the mock token, collection, registry and hostile tokens
 script/DeployVault.s.sol          testnet deployment of mocks, factory and one vault
 script/pair-vault.mjs             the pairing helper (prepare/complete, dry run by default; see the file header)
@@ -46,7 +47,10 @@ forge build
 forge test              # unit, fuzz and review-probe suites (the count is printed by CI)
 forge test --gas-report
 forge fmt --check src test script
+MAINNET_RPC_URL=https://rpc.mevblocker.io forge test --match-contract MainnetFork -vv   # optional: the real collection, token and registry on a fork
 ```
+
+The fork rehearsal (`test/fork/MainnetFork.t.sol`) impersonates the seat's wallet on a mainnet fork and runs deposit, plain transfer, pairing digest, registration through the vault against the real ERC-8004 registry, a reward split with the real IMD token, withdrawal and rescue, plus the checks that nobody else can move the seat. It skips without `MAINNET_RPC_URL`, so CI never touches a network; `FORK_SEAT` and `FORK_WALLET` select another seat and holder. The IMD seat collection (`0x0000eC93…`, verified `IdentityMD`, not a proxy) has no pause, blocklist or transfer hook; its owner-only functions only set identity hashes and Uniswap pointers.
 
 Foundry 1.8.3 is the pinned toolchain (the same release the IMD verifier runs). Dependencies are git submodules pinned in `foundry.lock`: `lib/openzeppelin-contracts` v5.4.0, `lib/forge-std` v1.16.2.
 
