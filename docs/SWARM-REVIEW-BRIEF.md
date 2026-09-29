@@ -24,6 +24,7 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 
 ## Required examination
 
+0. Challenge the fixes from the first swarm round rather than assume them: the refusal of the seat collection and the registry as `token`, the provider's `end()` ordering, claims under a shortfall and their recovery, the registry selector allowlist, both pairing clocks in the helper, and whether the invariant campaign actually exercises every handler action.
 1. NFT custody under any sequence of deposit, plain transfer, `syncHeld`, `end`, `withdrawNFT`, `rescueERC721`, rejecting recipients, a second vault for the same token, repeated exit. Recovery must not call the reward token. Claims and immutable splits must survive NFT withdrawal and late arrivals to the old vault.
 2. ERC-1271 digest binding, replay boundaries (chain, relay, wallet, token, nonce), owner/operator/provider roles, expiry edges, revocation, device changes and chain changes. Separate signature approval from terminating an already enrolled remote device.
 3. Reward accounting: settle-by-balance-difference, rounding, exact-amount claims, reentrancy and callbacks, supported-token assumptions, shortfall behaviour, arbitrary incoming tokens, several tokens at once, claims after exit.
@@ -62,9 +63,9 @@ From `contracts/`: `forge build`, `forge test`, `forge test --gas-report`, `forg
 
 From the repository root: `node --test test/pair-vault.test.mjs test/codex/vault-round3.test.mjs` and `node contracts/script/pair-vault.mjs --selftest`.
 
-Optional, read-only: `MAINNET_RPC_URL=<mainnet rpc> forge test --match-contract MainnetFork -vv` runs `contracts/test/fork/MainnetFork.t.sol` against the real IMD collection, token and registry on a fork (the harness impersonates the seat's wallet; nothing is broadcast). Without the variable those tests skip.
+Leave `MAINNET_RPC_URL` and `FORK_SEAT` unset for this review: the four tests in `contracts/test/fork/MainnetFork.t.sol` then skip. They exist as background evidence (the vault against the real IMD collection, token and registry on a mainnet fork, run by the maintainers, nothing broadcast); this review is offline only.
 
-Expected on the reviewed commit: 63 Foundry tests across 7 suites (including one handler-driven invariant suite and the 4 fork tests, which skip without an RPC) and 26 Node script tests. Report actual results and skips rather than assuming these counts.
+Expected on the reviewed commit: 64 Foundry tests across 7 suites, of which 60 pass and the 4 fork tests skip, plus 26 Node script tests. Report actual results and skips rather than assuming these counts.
 
 ## Finding format and deliverables
 
