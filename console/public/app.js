@@ -9,7 +9,8 @@ import { setupUI } from './setup.js';
 let state = null;
 let wallet = { eth: null, address: null, chainId: null };
 let busy = false;
-const setupRoom = setupUI({ getState: () => state, getWallet: () => wallet, api, toast, confirmDialog, refresh: refreshState });
+let renderedVault = null;
+const setupRoom = setupUI({ getState: () => state, getWallet: () => wallet, isBusy: () => busy, connectWallet: connect, runAction: (id) => handlers[id] ? handlers[id]() : sendTx(id), api, toast, confirmDialog, refresh: refreshState });
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -67,7 +68,15 @@ async function sendTx(action, params = {}) {
   try {
     const built = await api('/api/tx/build', { action, params });
     const from = wallet.address;
-    const ok = await confirmDialog(`<h2>${esc(action)}</h2><p>From <b>${esc(from)}</b><br>To <b>${esc(built.to)}</b></p><p class="offer">${esc(built.data)}</p><p>Your wallet will show the same target and data. Nothing is sent by this page except that request.</p>`);
+    const copy = {
+      approvePairing: ['Approve connection', 'Approve this host’s exact connection request for your NFT. It must confirm before the pairing timer ends.'],
+      registerAgent: ['Finish setup', 'Register the agent for this NFT through its vault. The console checks the registration target and this NFT before asking you to sign.'],
+      approveSeat: ['Approve your NFT vault', 'Allow this agreed vault to receive this one NFT.'],
+      deposit: ['Place your NFT in the vault', 'Your NFT moves into its vault. You retain the right to take it back.'],
+      withdraw: ['Take your NFT back', 'Return your NFT to the chosen address and end this hosting agreement.'],
+      claim: ['Claim your rewards', 'Send your available reward share to your wallet.'],
+    }[action] || [action, 'Review this transaction before continuing.'];
+    const ok = await confirmDialog(`<h2>${esc(copy[0])}</h2><p>${esc(copy[1])}</p><p class="room-subtitle">This is an on-chain transaction. Your wallet shows the gas cost.</p><details><summary>Transaction details</summary><p class="offer">From ${esc(from)}<br>To ${esc(built.to)}</p><p class="offer">${esc(built.data)}</p></details>`);
     if (!ok) return;
     const current = await api('/api/tx/build', { action, params });
     if (current.to !== built.to || current.data !== built.data || wallet.address !== from || wallet.chainId !== state.config.chainId) throw new Error('The action or wallet changed; review it again');
@@ -77,15 +86,15 @@ async function sendTx(action, params = {}) {
       catch { toast(`Approval sent: ${hash}. Setup sync failed; check this transaction before retrying.`, true); }
     }
     state = await api('/api/tx/sent', { action, hash, from });
-    toast(`${action} sent: ${short(hash)}`);
+    toast(`${copy[0]} sent: ${short(hash)}`);
   } catch (e) { toast(e.message, true); }
   finally { busy = false; render(); }
 }
 
-function confirmDialog(html) {
+function confirmDialog(html, label = 'Continue in wallet') {
   return new Promise((resolve) => {
     const d = $('dialog');
-    $('dialogContent').innerHTML = html + '<div class="row" style="display:flex;gap:10px;margin-top:16px"><button class="button primary" id="okBtn">Sign in wallet</button><button class="button" id="cancelBtn">Cancel</button></div>';
+    $('dialogContent').innerHTML = html + `<div class="row" style="display:flex;gap:10px;margin-top:16px"><button class="button primary" id="okBtn">${esc(label)}</button><button class="button" id="cancelBtn">Cancel</button></div>`;
     d.showModal();
     d.addEventListener('close', () => resolve(false), { once: true });
     $('okBtn').onclick = () => { d.close(); resolve(true); };
@@ -119,6 +128,10 @@ const handlers = {
     await refreshState();
   }),
   'pairing-offer': () => showForm("Import the host's pairing offer", [['offer', 'seatpair1:…', '']], async (f) => { state = { ...state, pairing: await api('/api/pairing/import', { offer: f.offer }) }; toast('Pairing offer imported'); render(); }),
+  'finish-registration': async () => {
+    try { await api('/api/register/intent', {}); await refreshState(); await sendTx('registerAgent'); }
+    catch (e) { toast(e.message, true); }
+  },
   'pairing-complete': async () => {
     if (busy) return;
     busy = true; render();
@@ -189,6 +202,9 @@ function render() {
   const c = state.config;
   const v = state.vault;
   const r = role();
+  if (!v) $('consoleDetails').open = true;
+  else if (renderedVault !== v.address) $('consoleDetails').open = false;
+  renderedVault = v?.address || null;
   $('chainNote').textContent = `chain ${c.chainId} · factory ${short(c.factory)} · IMD ${c.imdApi}`;
   $('walletBox').innerHTML = wallet.address
     ? `<span class="role-tag${r === 'viewer' || r === 'undecided' ? ' none' : ''}">${esc(r)}</span><span>${esc(short(wallet.address))}</span>${wallet.chainId !== c.chainId ? `<button class="button small" id="switchBtn">switch to chain ${c.chainId}</button>` : ''}`

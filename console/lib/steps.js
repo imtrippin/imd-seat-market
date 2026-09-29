@@ -26,7 +26,7 @@ export function derive(snap, nowSec = Math.floor(Date.now() / 1000)) {
   if (!v) {
     step = 'create';
     host.push({ id: 'hosting-offer', label: 'Publish your hosting offer', hint: 'Provider address, operator address, worker device key and your share. The owner pastes it to create the vault.' });
-    owner.push({ id: 'create', label: 'Create the vault', hint: 'Needs the host\'s offer (or the same fields typed by hand). One transaction to the factory.', needs: snap.hostingOffer ? [] : ['hosting-offer'] });
+    owner.push({ id: 'create', label: 'Create the vault', hint: 'Paste the host\'s offer string (or type the same fields). One transaction to the factory.', needs: [] });
   } else {
     const seatInVault = lower(v.seatOwner) === lower(v.address);
     const approvalLive = v.approvedDigest && v.approvedDigest !== zero32 && v.approvedUntil > nowSec;

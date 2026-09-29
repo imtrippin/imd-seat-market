@@ -22,8 +22,8 @@ test('no vault: the host publishes an offer, the owner creates', () => {
   const d = derive(snap(), NOW);
   assert.equal(d.step, 'create');
   assert.deepEqual(ids(d.host), ['hosting-offer']);
-  assert.deepEqual(d.owner[0].needs, ['hosting-offer']);
-  assert.deepEqual(derive(snap({ hostingOffer: {} }), NOW).owner[0].needs, []);
+  assert.deepEqual(d.owner[0].needs, [], 'the create form itself takes the host offer string');
+  assert.equal(d.owner[0].id, 'create');
 });
 
 test('deposit: approve then deposit, or record a plain transfer', () => {

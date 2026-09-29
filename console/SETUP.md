@@ -14,6 +14,10 @@ The service defaults to loopback. Remote use needs a separately operated HTTPS r
 
 ## User flow
 
+- The main screen shows one NFT, its agreed split and one next action. This version supports one selected agreement per console; it is not a five-slot listing manager.
+- After the vault is created and the NFT is deposited, the host clicks **Accept connections** and the owner clicks **Connect my NFT**. Either button asks for a scoped, gasless room sign-in if needed and then records that intent. The host authorizes one attempt for this agreement for up to 30 minutes, with the matching local operator key already configured. No code is requested before owner readiness.
+- The owner clicks **Approve connection** and confirms the transaction in their wallet. The host's local service waits for confirmation and completes the pairing, even if the host browser closes. If agent registration is still needed, **Finish setup** fetches the checked intent and asks the owner to approve a separate registration transaction. **NFT connected** appears only at the derived active stage, after pairing and binding are reported.
+- Scheduling and sign-in controls are under **Other options**. The full timeline, role actions and manual pairing remain under **Agreement details & manual controls**. The owner's withdrawal action stays on the main screen.
 - Scheduling is optional. Either participant can propose a time up to 30 days ahead; the other confirms the current version. Both see it in their own timezone. Changing a time clears readiness and requires fresh confirmation. An expired/past appointment can be replaced with **Connect now**.
 - Calendar export creates a UTC `.ics` event with a ten-minute reminder. Import it into a calendar to obtain reminders while the console is closed. Silent in-page reminders require the page to remain open.
 - Prepare the NFT deposit/sync before pairing. The owner checks the wallet network and needs gas; the host needs the agreed operator wallet or a matching local operator key. A preliminary zero-balance check is not a gas-cost guarantee.
@@ -25,9 +29,9 @@ The service defaults to loopback. Remote use needs a separately operated HTTPS r
 
 ## Optional host automation
 
-**Accept setup requests · 30 min** authorizes one pairing attempt for the selected vault only. It requires the matching operator key in the host's local console environment. The shared service never receives that key or the pairing signature.
+**Accept connections** authorizes one pairing attempt for the selected vault only, for up to 30 minutes as stated beside the button. It requires the matching operator key in the host's local console environment. The shared service never receives that key or the pairing signature.
 
-The local server maintains its own host heartbeat, including when the browser is hidden or closed, until the 30-minute limit. It starts once the owner is ready, shares the challenge, waits for the matching owner approval, verifies the resulting signature on the vault, and completes. Success, expiry or an error disables the mode. **Stop automatic setup**, leaving the room, resetting, changing wallet/chain or selecting another vault cancels future steps. A request already sent to IMD cannot be recalled. Restarting the local process does not restore automatic authorization.
+The local server maintains its own host heartbeat, including when the browser is hidden or closed, until the 30-minute limit. It starts once the owner is ready, shares the challenge, waits for the matching owner approval, verifies the resulting signature on the vault, and completes. Success, expiry or an error disables the mode. **Stop accepting**, signing out, resetting, changing wallet/chain or selecting another vault cancels future steps. A request already sent to IMD cannot be recalled. Restarting the local process does not restore automatic authorization. These are local coordination messages, not paid IMD swarm heartbeat jobs.
 
 This is not a watcher that signs for every new marketplace listing or auto-discovers new vaults. The host first selects and authorizes this agreement. Extending this to a prepared listing needs explicit matching of the provider's advertised terms, device slot, operator and new vault before the same flow can be reused.
 

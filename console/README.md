@@ -21,6 +21,8 @@ The host gives the owner a **hosting offer** (`seathost1:…`, provider, operato
 
 ## The flow
 
+The default screen guides one agreement: **Accept connections** for the prepared host, **Connect my NFT** for the owner, then **Approve connection** in the owner's wallet. A scoped room sign-in happens when needed. The host handles pairing automatically for this selected NFT, for one attempt within 30 minutes. If registration is needed afterward, **Finish setup** prepares a separate owner transaction; the screen does not call the NFT connected until the derived active stage. Scheduling, the timeline and manual controls are expandable; withdrawal remains visible. Vault creation and NFT deposit still precede this flow.
+
 | Step | Who | What happens |
 | --- | --- | --- |
 | Create the vault | owner | One transaction to the factory with the host's offer and the seat id. The console picks the new vault up from the `VaultCreated` event. |
@@ -37,11 +39,13 @@ The operator key lives with the host. Either run the host's console with `OPERAT
 
 ## Configuration
 
-**Optional automatic setup:** after joining the selected vault's room with the local operator key configured, the host can enable **Accept setup requests · 30 min**. For one attempt, the local server waits for the owner's readiness, requests the code, waits for the matching on-chain approval, and signs/completes. It stops after success, expiry or error. Stop/leave cancels future steps; an already sent request cannot be recalled. This is per agreement, not an unattended marketplace-wide listing watcher. No code starts just because an owner browses a listing. Manual signing still works when the host has no local operator key.
+**Automatic setup:** with the local operator key configured, the host enables **Accept connections**, signing into the selected vault's room when needed. For one attempt within 30 minutes, the local server waits for the owner's readiness, requests the code, waits for the matching on-chain approval, and signs/completes. It stops after success, expiry or error. Stop/sign-out cancels future steps; an already sent request cannot be recalled. This is per agreement, not an unattended marketplace-wide listing watcher. No code starts just because an owner browses a listing. Manual signing still works when the host has no local operator key.
 
 `config.json`: `chainId`, `rpcUrl` (a public RPC for reads), `imdApi`, `factory`, `collection`, `rewardToken`, `registrar`, `relayOrigin`, optional `explorer`, `rewardSymbol`, `rewardDecimals`, `pollMs`, `imdPollMs`, `setupUrl`. The example pins IMD's mainnet collection, token and registrar; the factory address is filled in once it is deployed. The console refuses a vault whose collection is not the configured one, a pairing offer for another vault, chain or relay, and a register-intent that does not name this seat.
 
 ## Tests
+
+`npm run test:browser` is an optional three-run Chromium rehearsal using local Anvil and fake IMD. It exercises the visible host/owner buttons, wallet refusal and retry, owner-page reload, and closing the host browser while the local service continues. It verifies exactly one pairing start/completion and checks the two owner transaction payloads. It needs Playwright and Chrome; `REVIEW_NODE_PACKAGES` can point to an existing Node module directory containing Playwright. `REVIEW_OUTPUT_DIR` optionally receives screenshots and a result summary in an ignored local folder. No live credentials are used. The browser dependency is not needed for the default suite.
 
 `npm test` runs the unit tests (pairing payloads, offer strings, the step machine) and an end-to-end test that starts a local anvil chain with the real vault and factory bytecode, a fake IMD that verifies pairings through the vault's `isValidSignature`, and the console itself, then walks one agreement from creation to exit the way the page does. The end-to-end test skips when anvil or the Foundry artifacts (`forge build` in `contracts/`) are missing.
 
