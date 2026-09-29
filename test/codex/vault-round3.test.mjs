@@ -105,7 +105,8 @@ test('R3-3: a failed nonce read must stop before invoking signing',{skip:!exists
   assert.ok(!r.journal.includes('publish'),'must never publish with an empty nonce');
   assert.ok(!r.journal.includes('mktx'),'next_nonce swallowed cast failure and reached signing with an empty value');
 }));
-test('Foundry 1.8.3 witness: empty nonce signs as zero using a public test key, without RPC',()=>{
+const castMissing=spawnSync('cast',['--version'],{encoding:'utf8'}).status!==0;
+test('Foundry 1.8.3 witness: empty nonce signs as zero using a public test key, without RPC',{skip:castMissing&&'cast (Foundry) is not on PATH'},()=>{
   const key='0x'+'0'.repeat(63)+'1'; // public fixture, never use for funds
   const r=spawnSync('cast',['mktx','--nonce','','--gas-limit','21000','--gas-price','1','--chain','84532','--legacy',
     '--private-key',key,'--rpc-url','http://127.0.0.1:9','0x'+'11'.repeat(20)],{encoding:'utf8',timeout:15000});

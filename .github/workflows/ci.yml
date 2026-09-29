@@ -17,6 +17,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.3
       - name: Pairing helper self-test
         run: node contracts/script/pair-vault.mjs --selftest
       - name: Offline script tests
