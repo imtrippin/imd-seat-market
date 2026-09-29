@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Seat console</title>
+  <title>Your NFT · Setup console</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" type="module"></script>
@@ -18,6 +18,7 @@
   </header>
   <main>
     <section id="setup" class="card hidden"></section>
+    <section id="setupRoom" class="card setup-room hidden" aria-label="Shared setup room"></section>
     <ol id="steps" class="steps" aria-label="Progress"></ol>
     <div class="columns">
       <section class="card role" id="ownerPanel"><h2>Owner <small id="ownerAddr"></small></h2><div class="actions" id="ownerActions"></div></section>
@@ -33,7 +34,7 @@
     <section class="card" id="imd"><h2>IMD's view <small id="imdNote"></small></h2><dl id="imdList"></dl></section>
     <section class="card"><h2>Timeline</h2><ol id="log" class="log"></ol></section>
   </main>
-  <footer><span>Both parties see the same state: it is read from the chain and IMD, not stored here.</span><button class="link" id="resetBtn">Reset console session</button></footer>
+  <footer><span>Agreements are read from the chain and IMD. Setup rooms share appointments and availability; keys stay local.</span><button class="link" id="resetBtn">Reset console session</button></footer>
   <dialog id="dialog"><div id="dialogContent"></div></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
 </body>

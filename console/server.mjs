@@ -17,6 +17,7 @@ const STATIC = {
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
+  '/setup.js': ['setup.js', 'text/javascript; charset=utf-8'],
 };
 
 function send(res, status, body) {
@@ -35,6 +36,9 @@ async function readBody(req) {
 
 export function createConsoleServer(session, { log = () => {} } = {}) {
   const server = http.createServer(async (req, res) => {
+    // The signing console is loopback-only, including its Host/Origin boundary.
+    const host = String(req.headers.host || '');
+    if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host) || (req.headers.origin && req.headers.origin !== `http://${host}`)) { res.writeHead(403).end(); return; }
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400).end(); return; }
     try {
@@ -47,6 +51,7 @@ export function createConsoleServer(session, { log = () => {} } = {}) {
       if (req.method === 'GET' && url.pathname === '/api/state') {
         await session.refresh();
         await session.refreshImd();
+        await session.setup.refresh();
         return send(res, 200, session.view());
       }
       if (req.method === 'GET' && url.pathname === '/api/vaults') {
@@ -54,7 +59,13 @@ export function createConsoleServer(session, { log = () => {} } = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/pairing/typed-data') return send(res, 200, session.pairingTypedData());
       if (req.method !== 'POST') { res.writeHead(404).end(); return; }
+      if (!String(req.headers['content-type']).startsWith('application/json')) { res.writeHead(415).end(); return; }
       const body = await readBody(req);
+      if (url.pathname.startsWith('/api/setup/')) {
+        const action = url.pathname.slice('/api/setup/'.length);
+        if (!['challenge', 'join', 'heartbeat', 'ready', 'schedule', 'accept', 'pending', 'leave', 'arm', 'disarm'].includes(action)) throw new Error('Unknown setup action');
+        return send(res, 200, await session.setup.act(action, body));
+      }
       switch (url.pathname) {
         case '/api/vault': await session.selectVault(body.address); return send(res, 200, session.view());
         case '/api/reset': session.reset(); return send(res, 200, session.view());
@@ -81,6 +92,8 @@ export async function startConsole({ config, port = 0, dataDir, operatorKey = nu
   const session = new Session(config, { dataDir, operatorKey, fetchImpl, log });
   await session.refresh();
   const server = createConsoleServer(session, { log });
+  const timer = setInterval(() => session.setup.tick(), 3000);
+  timer.unref(); server.on('close', () => clearInterval(timer));
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   return { session, server, port: server.address().port, close: () => new Promise((resolve) => server.close(resolve)) };
 }

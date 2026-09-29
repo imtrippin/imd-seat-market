@@ -14,6 +14,12 @@ export function validateConfig(c) {
   if (typeof c.relayOrigin !== 'string' || !/^https:\/\/[^\s/]+$/.test(c.relayOrigin)) problems.push('relayOrigin must be an https origin');
   if (c.imdApi !== undefined && !/^https?:\/\/[^\s/]+$/.test(String(c.imdApi))) problems.push('imdApi must be an origin');
   if (c.explorer !== undefined && !/^https?:\/\/[^\s]+$/.test(String(c.explorer))) problems.push('explorer must be a URL');
+  if (c.setupUrl !== undefined) {
+    try {
+      const u = new URL(c.setupUrl);
+      if (u.username || u.password || u.search || u.hash || u.pathname !== '/' || !(u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)))) throw new Error();
+    } catch { problems.push('setupUrl must be an HTTPS origin, or HTTP on loopback'); }
+  }
   return problems;
 }
 
@@ -32,6 +38,7 @@ export function normalizeConfig(c) {
     rewardDecimals: Number.isInteger(c.rewardDecimals) ? c.rewardDecimals : 18,
     pollMs: Number.isInteger(c.pollMs) ? Math.max(2000, c.pollMs) : 6000,
     imdPollMs: Number.isInteger(c.imdPollMs) ? Math.max(5000, c.imdPollMs) : 20000,
+    setupUrl: (c.setupUrl || 'http://127.0.0.1:18821').replace(/\/$/, ''),
   };
 }
 

@@ -6,7 +6,8 @@
   "description": "Local console for one SeatVault hosting agreement: the owner and the host see the same derived state; a loopback server reads the chain and IMD's public API, the wallet only signs.",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/e2e-anvil.test.mjs",
+    "rooms": "node rooms-server.mjs",
+    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/rooms.test.mjs test/e2e-anvil.test.mjs test/setup-e2e.test.mjs",
     "abi": "node scripts/sync-abi.mjs"
   },
   "dependencies": {

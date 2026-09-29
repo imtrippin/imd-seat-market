@@ -10,6 +10,7 @@ import { makeClient, readVault, readFactory, listVaults, tx as txFor, waitReceip
 import { ImdApi } from './imd.js';
 import { validatePairing, buildMessage, typedData, walletTypedData, completionBody, validateArtifact, expiryProblems, parseExpiry, encodeOffer, decodeOffer, validateHostingOffer, HOSTING_PREFIX, PAIRING_PREFIX } from './pairing.js';
 import { derive } from './steps.js';
+import { Setup } from './setup.js';
 
 const ADDR = /^0x[0-9a-fA-F]{40}$/;
 const HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -33,6 +34,7 @@ export class Session {
     this.factory = null;
     this.error = null;
     this.refreshing = false;
+    this.setup = new Setup(this);
     this.load();
   }
 
@@ -65,15 +67,19 @@ export class Session {
   // ---------------------------------------------------------------- reads
 
   async refresh() {
-    if (this.refreshing) return;
-    this.refreshing = true;
-    try {
-      if (!this.factory) this.factory = await readFactory(this.client, this.config.factory);
-      if (this.state.vault) this.snapshot = await readVault(this.client, this.state.vault);
-      this.error = null;
-    } catch (e) {
-      this.error = `chain read failed: ${e.shortMessage || e.message}`;
-    } finally { this.refreshing = false; }
+    if (this.refreshTask) return this.refreshTask;
+    this.refreshTask = (async () => {
+      try {
+        if (!this.factory) this.factory = await readFactory(this.client, this.config.factory);
+        const selected = this.state.vault;
+        if (selected) {
+          const snapshot = await readVault(this.client, selected);
+          if (this.state.vault === selected) this.snapshot = snapshot;
+        }
+        this.error = null;
+      } catch (e) { this.error = `chain read failed: ${e.shortMessage || e.message}`; }
+    })();
+    try { await this.refreshTask; } finally { this.refreshTask = null; }
   }
 
   async refreshImd({ force = false } = {}) {
@@ -117,17 +123,19 @@ export class Session {
       derived,
       error: this.error,
       now: this.now(),
+      setup: this.setup.view(),
     };
   }
 
   publicPairing() {
     const p = this.state.pairing;
-    return { phase: p.phase, code: p.code || null, artifact: p.artifact || null, offer: p.offer || null, codeExpiresAt: p.codeExpiresAt || null, completed: !!p.completed, enrolledSeen: !!p.enrolledSeen, completion: p.completion || null };
+    return { phase: p.phase, code: p.code || null, artifact: p.artifact || null, offer: p.offer || null, codeExpiresAt: p.codeExpiresAt || null, completed: !!p.completed, enrolledSeen: !!p.enrolledSeen, completion: p.completion || null, pendingHashes: p.pendingHashes || [] };
   }
 
   // ---------------------------------------------------------------- selection
 
   async selectVault(address) {
+    this.setup.clear();
     if (!ADDR.test(String(address || ''))) throw new Error('not an address');
     const vault = getAddress(address);
     const snap = await readVault(this.client, vault);
@@ -148,6 +156,7 @@ export class Session {
   }
 
   reset() {
+    this.setup.clear();
     this.state = { vault: null, hostingOffer: null, pairing: { phase: 'none' }, registration: {}, txs: [], log: [] };
     this.snapshot = null;
     this.imdView = { standing: null, standingAt: 0, standingStatus: null, workerStanding: null, pairStatus: null, lastError: null };
@@ -194,6 +203,8 @@ export class Session {
         const a = this.state.pairing.artifact;
         if (!a) throw new Error('import the host\'s pairing offer first');
         const problems = [...validateArtifact(a), ...expiryProblems(a, this.now())];
+        const remaining = Math.min(Number(a.codeExpiresAt), a.message.expiresAt * 1000) - this.now();
+        if (!Number.isFinite(remaining) || remaining < 60_000) problems.push('Less than one minute remains; let this attempt expire and start again before paying for an approval');
         if (problems.length) throw new Error(problems.join('; '));
         return { role: 'owner', ...txFor.approvePairing(v.address, a.message.nonce, a.message.expiresAt, a.message.relayOrigin), digest: a.digest };
       }
@@ -220,6 +231,10 @@ export class Session {
     if (!HASH.test(String(hash || ''))) throw new Error('bad transaction hash');
     const entry = { action, hash, from: from || null, status: 'pending', at: new Date(this.now()).toISOString() };
     this.state.txs.push(entry);
+    if (action === 'approvePairing') {
+      const list = (this.state.pairing.pendingHashes ||= []);
+      if (!list.includes(hash)) list.push(hash); // a fresh attempt must not start over an unresolved approval
+    }
     this.note(from ? this.roleOf(from) : 'wallet', `${action} sent: ${hash}`);
     this.track(entry).catch((e) => { entry.status = 'error'; entry.error = e.message; this.note('console', `${action} ${hash}: ${e.message}`); });
     return entry;
@@ -239,6 +254,9 @@ export class Session {
     const receipt = await waitReceipt(this.client, entry.hash);
     entry.status = receipt.status === 'success' ? 'confirmed' : 'reverted';
     entry.block = Number(receipt.blockNumber);
+    if (entry.action === 'approvePairing' && this.state.pairing.pendingHashes) {
+      this.state.pairing.pendingHashes = this.state.pairing.pendingHashes.filter((h) => h !== entry.hash);
+    }
     const events = decodeLogs(receipt);
     entry.events = events;
     this.note('chain', `${entry.action} ${entry.status} in block ${entry.block}${events.length ? ': ' + events.map((e) => e.name).join(', ') : ''}`);
@@ -258,12 +276,32 @@ export class Session {
 
   // ---------------------------------------------------------------- pairing
 
-  async startPairing(deviceKey) {
+  async startPairing(deviceKey, allowed = () => true) {
+    if (this.startingPairing) throw new Error('A pairing request is already in progress');
+    this.startingPairing = true;
+    try { return await this.startReadyPairing(deviceKey, allowed); } finally { this.startingPairing = false; }
+  }
+
+  async startReadyPairing(deviceKey, allowed) {
+    await this.refresh();
+    if (this.error) throw new Error(this.error);
     const v = this.snapshot;
     if (!v) throw new Error('select the vault first');
     if (!v.held || v.ended) throw new Error('the seat must be recorded as held and the agreement open');
     const key = '0x' + String(deviceKey || v.deviceKey).replace(/^0x/, '').toLowerCase();
     if (key !== v.deviceKey.toLowerCase()) throw new Error(`that device key is not the vault's (${v.deviceKey}); the owner can change it with setDeviceKey`);
+    for (const hash of this.state.pairing.pendingHashes || []) {
+      try { await this.client.getTransactionReceipt({ hash }); } catch { throw new Error('An approval transaction is unresolved; check the wallet before starting again'); }
+    }
+    // With a joined setup room the attempt is reserved there and the offer is shared through it; without one the
+    // host hands the owner the offer string by any channel. Both paths run the same local checks.
+    const inRoom = !!this.setup.auth;
+    let attemptId = null;
+    if (inRoom) {
+      const reservation = await this.setup.act('begin');
+      attemptId = reservation.room.attempt.id;
+    }
+    if (!allowed() || v.address !== this.state.vault) throw new Error('Setup was cancelled or the selected vault changed');
     const r = await this.imd.startPairing(key);
     if (!r.ok) throw new Error(`IMD /pair/start ${r.status}: ${JSON.stringify(r.json).slice(0, 200)}`);
     const p = { ...r.json, deviceKey: r.json.deviceKey || key.slice(2) };
@@ -271,6 +309,7 @@ export class Session {
     const problems = validatePairing(p, expect, this.now());
     if (problems.length) throw new Error(`pairing response rejected: ${problems.join('; ')}`);
     const codeExpiresAt = p.expiresAt !== undefined ? parseExpiry(p.expiresAt) : null;
+    if (!Number.isFinite(codeExpiresAt) || codeExpiresAt - this.now() < 60_000) throw new Error('IMD did not supply a pairing deadline with enough time remaining');
     // the signature expiry: 10 minutes, or the code's own life when it is shorter, never past the vault's window
     const sigExp = Math.floor(this.now() / 1000) + 600;
     const expiresAt = codeExpiresAt ? Math.min(sigExp, Math.floor(codeExpiresAt / 1000)) : sigExp;
@@ -279,6 +318,8 @@ export class Session {
     const artifact = { code: p.code, vault: v.address, collection: this.config.collection, chain: this.config.chainId, message, digest, codeExpiresAt };
     const offer = encodeOffer(PAIRING_PREFIX, artifact);
     this.state.pairing = { phase: 'offered', code: p.code, artifact, offer, codeExpiresAt, completed: false, enrolledSeen: false };
+    this.save();
+    if (inRoom) await this.setup.act('offer', { attemptId, offer });
     this.note('host', `pairing ${p.code} started for device ${key.slice(0, 10)}…; the owner must approve digest ${digest.slice(0, 10)}… before ${new Date(expiresAt * 1000).toISOString()}`);
     return this.publicPairing();
   }
@@ -311,13 +352,21 @@ export class Session {
 
   /// The host completes: sign with the operator key on the server, or accept a signature made in the operator's
   /// wallet; either way the vault must answer valid before anything is sent to IMD.
-  async completePairing(signature = null) {
+  async completePairing(signature = null, allowed = () => true) {
+    if (this.completingPairing) throw new Error('Pairing completion is already in progress');
+    this.completingPairing = true;
+    try { return await this.completeApprovedPairing(signature, allowed); } finally { this.completingPairing = false; }
+  }
+
+  async completeApprovedPairing(signature, allowed) {
     const v = this.snapshot;
     const a = this.state.pairing.artifact;
     if (!v || !a) throw new Error('no pairing in progress');
     const problems = [...validateArtifact(a), ...expiryProblems(a, this.now())];
     if (problems.length) throw new Error(problems.join('; '));
     await this.refresh();
+    if (this.error) throw new Error(this.error);
+    if (!allowed() || v.address !== this.state.vault) throw new Error('Setup was cancelled or the selected vault changed');
     if (String(this.snapshot.approvedDigest).toLowerCase() !== String(a.digest).toLowerCase()) throw new Error('the vault has not approved this digest yet (wait for the owner\'s approval to be mined)');
     if (this.snapshot.approvedUntil <= Math.floor(this.now() / 1000)) throw new Error('the approval has expired');
     let sig = signature;
@@ -332,6 +381,9 @@ export class Session {
     const digest = hashTypedData(typedData(a));
     if (digest.toLowerCase() !== String(a.digest).toLowerCase()) throw new Error('typed-data digest mismatch');
     if (!(await isValidSignature(this.client, v.address, digest, sig))) throw new Error('the vault does not accept this signature (expired, wrong chain, or not the approved digest)');
+    const late = expiryProblems(a, this.now());
+    if (late.length) throw new Error(late.join('; '));
+    if (!allowed() || v.address !== this.state.vault) throw new Error('Setup was cancelled or the selected vault changed');
     const body = completionBody(a, sig);
     const r = await this.imd.completePairing(body);
     this.state.pairing.completion = { status: r.status, response: r.json, at: new Date(this.now()).toISOString() };

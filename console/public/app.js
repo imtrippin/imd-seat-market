@@ -4,10 +4,12 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 const lower = (a) => String(a || '').toLowerCase();
+import { setupUI } from './setup.js';
 
 let state = null;
 let wallet = { eth: null, address: null, chainId: null };
 let busy = false;
+const setupRoom = setupUI({ getState: () => state, getWallet: () => wallet, api, toast, confirmDialog, refresh: refreshState });
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -33,8 +35,8 @@ async function connect() {
   const accounts = await eth.request({ method: 'eth_requestAccounts' });
   wallet.address = accounts[0] || null;
   wallet.chainId = parseInt(await eth.request({ method: 'eth_chainId' }), 16);
-  eth.on?.('accountsChanged', (a) => { wallet.address = a[0] || null; render(); });
-  eth.on?.('chainChanged', (c) => { wallet.chainId = parseInt(c, 16); render(); });
+  eth.on?.('accountsChanged', async (a) => { await api('/api/setup/leave', {}).catch(() => {}); wallet.address = a[0] || null; await refreshState(); });
+  eth.on?.('chainChanged', async (c) => { await api('/api/setup/leave', {}).catch(() => {}); wallet.chainId = parseInt(c, 16); await refreshState(); });
   render();
 }
 
@@ -67,7 +69,13 @@ async function sendTx(action, params = {}) {
     const from = wallet.address;
     const ok = await confirmDialog(`<h2>${esc(action)}</h2><p>From <b>${esc(from)}</b><br>To <b>${esc(built.to)}</b></p><p class="offer">${esc(built.data)}</p><p>Your wallet will show the same target and data. Nothing is sent by this page except that request.</p>`);
     if (!ok) return;
+    const current = await api('/api/tx/build', { action, params });
+    if (current.to !== built.to || current.data !== built.data || wallet.address !== from || wallet.chainId !== state.config.chainId) throw new Error('The action or wallet changed; review it again');
     const hash = await wallet.eth.request({ method: 'eth_sendTransaction', params: [{ from, to: built.to, data: built.data, value: '0x0' }] });
+    if (action === 'approvePairing' && state.setup?.room?.attempt) {
+      try { await api('/api/setup/pending', { hash, attemptId: state.setup.room.attempt.id }); }
+      catch { toast(`Approval sent: ${hash}. Setup sync failed; check this transaction before retrying.`, true); }
+    }
     state = await api('/api/tx/sent', { action, hash, from });
     toast(`${action} sent: ${short(hash)}`);
   } catch (e) { toast(e.message, true); }
@@ -79,6 +87,7 @@ function confirmDialog(html) {
     const d = $('dialog');
     $('dialogContent').innerHTML = html + '<div class="row" style="display:flex;gap:10px;margin-top:16px"><button class="button primary" id="okBtn">Sign in wallet</button><button class="button" id="cancelBtn">Cancel</button></div>';
     d.showModal();
+    d.addEventListener('close', () => resolve(false), { once: true });
     $('okBtn').onclick = () => { d.close(); resolve(true); };
     $('cancelBtn').onclick = () => { d.close(); resolve(false); };
   });
@@ -105,8 +114,8 @@ const handlers = {
   }),
   'pairing-start': () => showForm('Start a pairing', [['deviceKey', 'Worker device key (must be the vault\'s)', state.vault?.deviceKey || '']], async (f) => {
     const p = await api('/api/pairing/start', { deviceKey: f.deviceKey.trim() });
-    showText('Give this pairing offer to the owner now (the code lasts five minutes)', p.offer);
-    render();
+    toast('Fresh pairing code shared with the owner. Waiting for approval.');
+    await refreshState();
   }),
   'pairing-offer': () => showForm("Import the host's pairing offer", [['offer', 'seatpair1:…', '']], async (f) => { state = { ...state, pairing: await api('/api/pairing/import', { offer: f.offer }) }; toast('Pairing offer imported'); render(); }),
   'pairing-complete': async () => {
@@ -256,6 +265,7 @@ function render() {
     $('imdNote').textContent = '';
   }
   $('log').innerHTML = (state.log || []).slice().reverse().map((l) => `<li><time>${esc(l.at.replace('T', ' ').slice(0, 19))}</time><b>${esc(l.who)}</b><span>${esc(l.text)}</span></li>`).join('');
+  setupRoom.render(state);
 }
 
 function selectVaultDialog() {
@@ -265,8 +275,17 @@ function selectVaultDialog() {
   });
 }
 
+let importedRoom = false;
+async function refreshState() { state = await api('/api/state'); render(); }
 async function poll() {
-  try { state = await api('/api/state'); render(); } catch (e) { $('notes').innerHTML = `<div class="note error">console server unreachable: ${esc(e.message)}</div>`; }
+  try {
+    if (!importedRoom) {
+      importedRoom = true;
+      const vault = new URLSearchParams(location.hash.slice(1)).get('vault');
+      if (/^0x[0-9a-fA-F]{40}$/.test(vault || '')) await api('/api/vault', { address: vault });
+    }
+    await refreshState();
+  } catch (e) { setupRoom.disconnected(); $('notes').innerHTML = `<div class="note error">console server unreachable: ${esc(e.message)}</div>`; }
   setTimeout(poll, 3000);
 }
 

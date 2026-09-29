@@ -11,5 +11,6 @@
   "rewardSymbol": "IMD",
   "rewardDecimals": 18,
   "pollMs": 6000,
-  "imdPollMs": 20000
+  "imdPollMs": 20000,
+  "setupUrl": "http://127.0.0.1:18821"
 }

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createPublicClient, createWalletClient, http, defineChain, parseAbi } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { startConsole } from '../server.mjs';
+import { startRooms } from '../rooms-server.mjs';
 import { startFakeImd } from './fake-imd.mjs';
 import { normalizeConfig } from '../lib/config.js';
 
@@ -61,6 +62,8 @@ export async function startAnvilEnv({ anvilPort = 8547, consolePort = 0, operato
   await pub.waitForTransactionReceipt({ hash: await wallets.owner.writeContract({ address: seats.address, abi: mintAbi, functionName: 'mint', args: [addr.owner, 1n] }) });
   const imd = await startFakeImd({ client: pub, chainId: 31337, collection: seats.address, registrar: registrar.address, relayOrigin: RELAY });
   const config = normalizeConfig({ chainId: 31337, rpcUrl: RPC, imdApi: imd.base, factory: factory.address, collection: seats.address, rewardToken: reward.address, registrar: registrar.address, relayOrigin: RELAY, pollMs: 2000, imdPollMs: 5000 });
+  const roomService = await startRooms({ config });
+  config.setupUrl = `http://127.0.0.1:${roomService.port}`;
   const dataDir = mkdtempSync(join(tmpdir(), 'seat-console-'));
   const console_ = await startConsole({ config, dataDir, operatorKey, port: consolePort });
   const base = `http://127.0.0.1:${console_.port}`;
@@ -79,8 +82,17 @@ export async function startAnvilEnv({ anvilPort = 8547, consolePort = 0, operato
     return hash;
   };
   const mintReward = async (to, amount) => pub.waitForTransactionReceipt({ hash: await wallets.owner.writeContract({ address: reward.address, abi: mintAbi, functionName: 'mint', args: [to, BigInt(amount)] }) });
-  const stop = async () => { await console_.close(); await imd.close(); anvil.kill(); };
-  return { RPC, pub, wallets, addr, seats, reward, registrar, factory, imd, console: console_, base, api, stateIs, send, mintReward, stop };
+  const readyPairing = async () => {
+    const vault = (await api('/api/state')).vault.address;
+    const c = await roomService.rooms.challenge({ vault, account: addr.owner });
+    const ownerLogin = await roomService.rooms.join({ nonce: c.nonce, signature: await wallets.owner.account.signMessage({ message: c.message }) });
+    await roomService.rooms.act(ownerLogin.token, 'ready', { ready: true, version: 0 });
+    const h = await api('/api/setup/challenge', { account: addr.host });
+    await api('/api/setup/join', { nonce: h.nonce, signature: await wallets.host.account.signMessage({ message: h.message }) });
+    await api('/api/setup/ready', { ready: true, version: 0 });
+  };
+  const stop = async () => { await console_.close(); await roomService.close(); await imd.close(); anvil.kill(); };
+  return { RPC, pub, wallets, addr, seats, reward, registrar, factory, imd, config, roomService, readyPairing, console: console_, base, api, stateIs, send, mintReward, stop };
 }
 
 /// Drives a fresh environment to a named stage: 'created' | 'deposited' | 'offered' | 'approved' | 'paired' | 'active'.
@@ -96,6 +108,7 @@ export async function driveTo(env, stage) {
   await send('owner', 'deposit');
   s = await stateIs((x) => x.vault.held, 'deposit');
   if (stage === 'deposited') return s;
+  await env.readyPairing();
   const p = await api('/api/pairing/start', { deviceKey: DEVICE_KEY });
   await api('/api/pairing/import', { offer: p.offer });
   if (stage === 'offered') return api('/api/state');

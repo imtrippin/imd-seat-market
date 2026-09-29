@@ -32,6 +32,9 @@ test('the console walks one agreement from creation to exit against anvil and a 
     assert.equal(s.derived.step, 'pair');
     await assert.rejects(api('/api/pairing/complete', {}), /no pairing in progress/);
     // 3. pairing: host starts, owner imports and approves, host completes with the server-side operator key
+    // the manual path: nobody joined a setup room, the host hands the owner the offer string
+    let s0 = await api('/api/state');
+    assert.equal(s0.setup.room, null);
     const p = await api('/api/pairing/start', { deviceKey: DEVICE_KEY });
     assert.match(p.offer, /^seatpair1:/);
     await api('/api/pairing/import', { offer: p.offer });
@@ -39,6 +42,7 @@ test('the console walks one agreement from creation to exit against anvil and a 
     await send('owner', 'approvePairing');
     s = await stateIs((x) => x.vault.approvedDigest.toLowerCase() === p.artifact.digest.toLowerCase(), 'the pairing approval');
     assert.deepEqual(primary(s.derived.host), ['pairing-complete']);
+    s = await stateIs((x) => x.pairing.pendingHashes.length === 0, 'the approval hash to be pruned once mined');
     const done = await api('/api/pairing/complete', {});
     assert.equal(done.completed, true);
     assert.ok(imd.state.calls.some((c) => c.path === '/pair/complete'));
