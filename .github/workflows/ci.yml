@@ -46,3 +46,29 @@ jobs:
         run: forge build
       - name: Unit and fuzz tests
         run: forge test
+
+  console:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.3
+      - name: Build the artifacts the end-to-end test deploys
+        working-directory: contracts
+        run: forge build
+      - name: Install
+        working-directory: console
+        run: npm ci --no-audit --no-fund
+      - name: ABI files match the artifacts
+        working-directory: console
+        run: npm run abi && git diff --exit-code -- abi
+      - name: Unit and end-to-end tests (anvil + fake IMD)
+        working-directory: console
+        run: npm test

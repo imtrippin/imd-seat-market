@@ -13,6 +13,7 @@ Seat Market is a prototype of one contract for hosting an IMD seat NFT: an NFT-h
 ```text
 cd contracts && forge build && forge test && forge fmt --check src test script   # Foundry 1.8.3
 npm test                                                                        # Node 22+; set REVIEW_PYTHON to a real Python 3 if discovery finds an alias
+cd console && npm test                                                          # the console: unit tests + an anvil end-to-end run (needs forge build first)
 node contracts/script/pair-vault.mjs --selftest
 ```
 

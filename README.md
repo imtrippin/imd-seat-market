@@ -17,6 +17,7 @@ contracts/script/       testnet deployment script, the pairing helper (pair-vaul
 contracts/README.md     the rule, guarantees, gas and review history
 contracts/VAULT-DESIGN.md  the design, trust limits and open integration questions
 docs/SWARM-REVIEW-BRIEF.md the brief for an independent review
+console/                the local page for one agreement: owner and host see the same derived state and sign the prepared calls
 test/                   offline tests of the pairing helper and the walkthrough's send logic
 review/HISTORY.md       a sanitized summary of the review chain
 ```
@@ -27,6 +28,7 @@ review/HISTORY.md       a sanitized summary of the review chain
 cd contracts && forge build && forge test && forge fmt --check src test script   # Foundry 1.8.3, solc 0.8.30
 npm test                                                                        # Node 22+, needs a Python 3 interpreter (REVIEW_PYTHON=...)
 node contracts/script/pair-vault.mjs --selftest
+cd console && npm install && npm test      # console unit tests + an offline end-to-end run on anvil
 ```
 
 Dependencies are git submodules (`git clone --recursive`): OpenZeppelin Contracts v5.4.0 and forge-std v1.16.2, pinned in `contracts/foundry.lock`.

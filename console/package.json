@@ -1,0 +1,15 @@
+{
+  "name": "seat-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local console for one SeatVault hosting agreement: the owner and the host see the same derived state; a loopback server reads the chain and IMD's public API, the wallet only signs.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/e2e-anvil.test.mjs",
+    "abi": "node scripts/sync-abi.mjs"
+  },
+  "dependencies": {
+    "viem": "2.57.1"
+  }
+}
