@@ -24,7 +24,7 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 
 ## Required examination
 
-0. Challenge the fixes from the earlier swarm rounds rather than assume them: the reward path's restriction to the pinned token and the owner-only rescues (new this round, replacing the per-token ledger), the provider's `end()` gate on the recorded seat (new this round), the approval-replacement event, claims under a shortfall and their recovery, the registrar selector and own-seat calldata check (new this round), both pairing clocks in the helper, and whether the invariant campaign actually exercises every handler action.
+0. Challenge the fixes from the earlier swarm rounds rather than assume them: the reward path's restriction to the pinned token and the owner-only rescues with their guards (no rescue may change the reward balance or move the seat; new this round, replacing the per-token ledger), the provider's `end()` gate on the recorded seat (new this round), the approval-replacement event, claims under a shortfall and their recovery, the registrar selector and own-seat calldata check (new this round), both pairing clocks in the helper, and whether the invariant campaign actually exercises every handler action.
 1. NFT custody under any sequence of deposit, plain transfer, `syncHeld`, `end`, `withdrawNFT`, `rescueERC721`, `rescueERC20`, rejecting recipients, a second vault for the same token, repeated exit. Recovery must not call the reward token. Claims and immutable splits must survive NFT withdrawal and late arrivals to the old vault.
 2. ERC-1271 digest binding, replay boundaries (chain, relay, wallet, token, nonce), owner/operator/provider roles, expiry edges, revocation, device changes and chain changes. Separate signature approval from terminating an already enrolled remote device.
 3. Reward accounting: settle-by-balance-difference, rounding, exact-amount claims, reentrancy and callbacks, supported-token assumptions, shortfall behaviour, other incoming tokens (never split, owner-rescued), claims after exit.
@@ -42,7 +42,7 @@ Excluded: the website concept (not in this repository), the legacy JavaScript si
 - The pairing helper's schema validation is not an on-chain preflight. The CLI does not verify current custody, approved digest, deployed terms or operator configuration through RPC before signing; those remain manual prerequisites to any later live use.
 - The provider can `end()` only once the owner has recorded the seat as held (`deposit()` or `syncHeld()`); the owner can always end. A claim pays what the vault holds when an unsupported token's balance fell outside transfers, and keeps the remainder allocated.
 - No role rotation: a lost owner key strands the seat; a compromised provider key can end the agreement and claim the provider's allocation, nothing more.
-- Vault creation costs about 2.1 million gas on the seat's chain; a clone factory is a known follow-up, not part of this snapshot.
+- Vault creation costs about 2.6 million gas on the seat's chain; a clone factory is a known follow-up, not part of this snapshot.
 - Review counts and historical mock-testnet success do not prove safety.
 
 ## Disclosed integration assumptions, not verified by mocks
@@ -65,7 +65,7 @@ From the repository root: `node --test test/pair-vault.test.mjs test/codex/vault
 
 Leave `MAINNET_RPC_URL` and `FORK_SEAT` unset for this review: the five tests in `contracts/test/fork/MainnetFork.t.sol` then skip. They exist as background evidence (the vault against the real IMD collection, token and registrar on a mainnet fork, run by the maintainers, nothing broadcast); this review is offline only.
 
-Expected on the reviewed commit: 73 Foundry tests across 7 suites, of which 68 pass and the 5 fork tests skip, plus 27 Node script tests. Report actual results and skips rather than assuming these counts.
+Expected on the reviewed commit: 76 Foundry tests across 7 suites, of which 71 pass and the 5 fork tests skip, plus 27 Node script tests. Report actual results and skips rather than assuming these counts.
 
 ## Finding format and deliverables
 

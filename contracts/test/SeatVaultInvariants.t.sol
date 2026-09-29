@@ -12,7 +12,7 @@ import {SeatVault} from "../src/SeatVault.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistrar} from "./VaultMocks.sol";
+import {MockERC721, MockRegistrar, AliasedRewardToken} from "./VaultMocks.sol";
 
 contract VaultHandler is Test {
     SeatVault public vault;
@@ -185,6 +185,14 @@ contract VaultHandler is Test {
         vm.warp(vm.getBlockTimestamp() + bound(delta, 1, 2 hours));
     }
 
+    function rescueThroughARewardAliasMustFail() external {
+        uint256 balance = token.balanceOf(address(vault));
+        address entry = address(AliasedRewardToken(address(token)).entry());
+        vm.prank(owner);
+        (bool ok,) = address(vault).call(abi.encodeCall(SeatVault.rescueERC20, (IERC20(entry), owner)));
+        require(!ok || balance == 0, "a second entry point of the reward token is not a rescue target");
+    }
+
     // ---------------------------------------------------------------- strangers: calls that must fail (low-level, so a
     // wrongly succeeding call reverts the handler and fails the campaign)
 
@@ -247,7 +255,7 @@ contract SeatVaultInvariants is Test {
     function setUp() public {
         vm.warp(1_800_000_000);
         seats = new MockERC721();
-        token = new MockERC20();
+        token = new AliasedRewardToken(); // the reward token has a second entry point the campaign must not be able to use
         MockRegistrar registry = new MockRegistrar();
         seats.mint(owner, 1);
         vault = new SeatVault(
@@ -298,6 +306,9 @@ contract SeatVaultInvariants is Test {
         handler.rescueOther();
         assertEq(handler.other().balanceOf(owner), 5);
         handler.strangersCannotMoveTheSeat();
+        handler.arrive(10);
+        handler.rescueThroughARewardAliasMustFail();
+        assertEq(token.balanceOf(address(vault)), 10, "the alias rescue moved nothing");
         handler.warp(2 hours);
         assertEq(vault.isValidSignature(handler.lastDigest(), handler.lastSignature()), bytes4(0xffffffff));
         handler.withdrawToSink();

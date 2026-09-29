@@ -10,7 +10,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {MockERC20} from "./Mocks.sol";
-import {MockERC721, MockRegistrar, SilentRegistrar} from "./VaultMocks.sol";
+import {MockERC721, MockRegistrar, SilentRegistrar, AliasedRewardToken, ProxiedCollection} from "./VaultMocks.sol";
 
 /// @dev A seat collection with the pre-standard `transfer(address,uint256)` some old collections still expose.
 contract LegacyTransferCollection is ERC721 {
@@ -153,6 +153,70 @@ contract SeatVaultSwarmProbes is Test {
         vault.withdrawNFT(address(0));
         assertEq(reward.balanceOf(address(vault)), 100);
         assertEq(seats.ownerOf(1), address(vault));
+    }
+
+    function test_aRescueCannotTouchTheRewardBalanceThroughASecondEntryPoint() public {
+        AliasedRewardToken aliased = new AliasedRewardToken();
+        SeatVault v = new SeatVault(
+            owner,
+            provider,
+            vm.addr(OPERATOR_KEY),
+            seats,
+            1,
+            aliased,
+            3000,
+            keccak256("swarm-device"),
+            address(registry),
+            RELAY
+        );
+        _deposit(v);
+        aliased.mint(address(v), 100);
+        v.settle();
+        address entry = address(aliased.entry()); // read before expectRevert: a getter would be "the next call"
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.UnsupportedToken.selector); // Codex after the third round: this drained the host's share
+        v.rescueERC20(IERC20(entry), owner);
+        assertEq(aliased.balanceOf(address(v)), 100);
+        vm.prank(provider);
+        assertEq(v.claim(), 30);
+        MockERC20 unrelated = new MockERC20();
+        unrelated.mint(address(v), 5);
+        vm.prank(owner);
+        v.rescueERC20(IERC20(address(unrelated)), owner); // an unrelated asset still leaves
+        assertEq(unrelated.balanceOf(owner), 5);
+    }
+
+    function test_aRescueCannotMoveTheSeatThroughAProxyOfTheCollection() public {
+        ProxiedCollection proxied = new ProxiedCollection();
+        proxied.mint(owner, 1);
+        SeatVault v = new SeatVault(
+            owner,
+            provider,
+            vm.addr(OPERATOR_KEY),
+            proxied,
+            1,
+            reward,
+            3000,
+            keccak256("swarm-device"),
+            address(registry),
+            RELAY
+        );
+        address entry = address(proxied.entry());
+        vm.startPrank(owner);
+        proxied.approve(address(v), 1);
+        v.deposit();
+        vm.expectRevert(SeatVault.UnsupportedToken.selector);
+        v.rescueERC721(IERC721(entry), 1, owner);
+        vm.stopPrank();
+        assertEq(proxied.ownerOf(1), address(v));
+        assertTrue(v.held());
+    }
+
+    function test_rescueERC721RefusesTheRegistrar() public {
+        _deposit(vault);
+        vm.prank(owner);
+        vm.expectRevert(SeatVault.UnsupportedToken.selector);
+        vault.rescueERC721(IERC721(address(registry)), 1, owner);
     }
 
     // ------------------------------------------------------------ F2: the provider cannot kill a vault before it starts

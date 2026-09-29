@@ -151,3 +151,62 @@ contract ShrinkingRewardToken is MockERC20 {
         _burn(holder, amount);
     }
 }
+
+/// @dev A fixed-balance reward token with a second entry point (an alias or proxy contract the token trusts, the
+/// TUSD / Synthetix pattern): `entry` reads and moves the same balances on behalf of its caller.
+contract AliasedRewardToken is MockERC20 {
+    RewardEntry public immutable entry;
+
+    constructor() {
+        entry = new RewardEntry(this);
+    }
+
+    function entryTransfer(address from, address to, uint256 amount) external {
+        require(msg.sender == address(entry), "entry only");
+        _transfer(from, to, amount);
+    }
+}
+
+contract RewardEntry {
+    AliasedRewardToken public immutable token;
+
+    constructor(AliasedRewardToken token_) {
+        token = token_;
+    }
+
+    function balanceOf(address who) external view returns (uint256) {
+        return token.balanceOf(who);
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        token.entryTransfer(msg.sender, to, amount);
+        return true;
+    }
+}
+
+/// @dev A seat collection that trusts a mover contract, so a token could leave through an address other than the
+/// collection's own.
+contract ProxiedCollection is MockERC721 {
+    CollectionEntry public immutable entry;
+
+    constructor() {
+        entry = new CollectionEntry(this);
+    }
+
+    function entryTransfer(address from, address to, uint256 id) external {
+        require(msg.sender == address(entry), "entry only");
+        _transfer(from, to, id);
+    }
+}
+
+contract CollectionEntry {
+    ProxiedCollection public immutable collection;
+
+    constructor(ProxiedCollection collection_) {
+        collection = collection_;
+    }
+
+    function safeTransferFrom(address from, address to, uint256 id) external {
+        collection.entryTransfer(from, to, id);
+    }
+}

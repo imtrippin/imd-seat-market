@@ -328,19 +328,23 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         return accounted > balance ? accounted - balance : 0;
     }
 
-    /// @notice Moves an NFT that is not the seat (another collection's token, or a mistake) to `to`. The reward token
-    /// is never a rescue target: rewards leave only through `claim`.
+    /// @notice Moves an NFT that is not the designated seat (another collection's token, another token of the seat
+    /// collection, or a mistake) to `to`. The reward token and the registrar are never rescue targets, and a rescue
+    /// that would change the reward balance or move the seat is refused (see `_rescueCheck`).
     function rescueERC721(IERC721 other, uint256 id, address to) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();
         if (to == address(0)) revert ZeroAddress();
         if (address(other) == address(collection) && id == tokenId) revert UseWithdraw();
-        if (address(other) == address(rewardToken)) revert UnsupportedToken();
+        if (address(other) == address(rewardToken) || address(other) == registrar) revert UnsupportedToken();
+        (uint256 rewardBefore, bool seatBefore) = _rescueSnapshot();
         other.safeTransferFrom(address(this), to, id);
+        _rescueCheck(rewardBefore, seatBefore);
     }
 
     /// @notice Moves the vault's whole balance of an ERC-20 that is not the reward token to `to`: such a token is
     /// never split, so it is the owner's to take back. The seat collection and the registrar are refused as well
-    /// (an ERC-721 with a legacy `transfer(address,uint256)` would move a token by id).
+    /// (an ERC-721 with a legacy `transfer(address,uint256)` would move a token by id), and a rescue that would
+    /// change the reward balance or move the seat is refused (see `_rescueCheck`).
     function rescueERC20(IERC20 other, address to) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();
         if (to == address(0)) revert ZeroAddress();
@@ -348,7 +352,9 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
             address(other) == address(rewardToken) || address(other) == address(collection)
                 || address(other) == registrar
         ) revert UnsupportedToken();
+        (uint256 rewardBefore, bool seatBefore) = _rescueSnapshot();
         other.safeTransfer(to, other.balanceOf(address(this)));
+        _rescueCheck(rewardBefore, seatBefore);
     }
 
     // ---------------------------------------------------------------- internals
@@ -366,6 +372,20 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         approvedDigest = bytes32(0);
         approvedUntil = 0;
         approvedChain = 0;
+    }
+
+    /// @dev A rescue calls a contract the owner named. Whatever that contract is, the call must leave the reward
+    /// token's balance and the seat where they were: a second entry point of the reward token (an alias or a proxy
+    /// the token trusts) would otherwise let the owner take the provider's share, and a proxy the collection trusts
+    /// could move the seat with the bookkeeping intact. The seat's own return (`withdrawNFT`) never runs these reads.
+    function _rescueSnapshot() internal view returns (uint256 rewardBalance, bool seatHere) {
+        rewardBalance = rewardToken.balanceOf(address(this));
+        seatHere = collection.ownerOf(tokenId) == address(this);
+    }
+
+    function _rescueCheck(uint256 rewardBefore, bool seatBefore) internal view {
+        if (rewardToken.balanceOf(address(this)) != rewardBefore) revert UnsupportedToken();
+        if (seatBefore && collection.ownerOf(tokenId) != address(this)) revert UnsupportedToken();
     }
 
     function _settle(uint256 balance) internal {
