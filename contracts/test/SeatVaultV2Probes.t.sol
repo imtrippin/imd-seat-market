@@ -78,8 +78,7 @@ contract SeatVaultV2Probes is Test {
             3000,
             keccak256("v2-device"),
             address(registry),
-            "https://relay.invalid",
-            0
+            "https://relay.invalid"
         );
     }
 

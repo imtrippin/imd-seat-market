@@ -32,7 +32,7 @@ contract DeployVault is Script {
         );
         seats.mint(owner, TOKEN);
         imd.mint(owner, 1_000e18); // the deployer will play the reward payer
-        SeatVault vault = factory.create(provider, operator, TOKEN, PROVIDER_BPS, deviceKey, 0);
+        SeatVault vault = factory.create(provider, operator, TOKEN, PROVIDER_BPS, deviceKey);
         vm.stopBroadcast();
         console.log("chain", block.chainid);
         console.log("MockERC721 seats", address(seats));

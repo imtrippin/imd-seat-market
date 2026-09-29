@@ -18,7 +18,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// What it does not do: judge service,
 /// attribute rewards to jobs or periods, tell a misdirected transfer from a reward (every positive balance change
 /// of a token is shared), or revoke a device that IMD already enrolled (moving the NFT out is what makes that
-/// device stale on IMD's side). Rent and collateral stay in SeatEscrow; this contract never accepts deposits.
+/// device stale on IMD's side). There is no fee and no collateral: the contract never accepts deposits, it only
+/// splits what arrives.
 ///
 /// Pairing authority. IMD pairs a device to a seat by verifying an EIP-712 `WorkerAuthorization` signature from
 /// the seat holder; for a contract holder it calls `isValidSignature(digest, signature)` (ERC-1271). This vault
@@ -50,7 +51,6 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
     IERC20 public immutable rewardToken;
     uint16 public immutable providerBps;
     address public immutable identityRegistry;
-    uint256 public immutable escrowAgreementId;
     bytes32 public immutable relayOriginHash;
     string public relayOrigin;
 
@@ -102,8 +102,7 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         uint16 providerBps_,
         bytes32 deviceKey_,
         address identityRegistry_,
-        string memory relayOrigin_,
-        uint256 escrowAgreementId_
+        string memory relayOrigin_
     ) {
         if (
             owner_ == address(0) || provider_ == address(0) || operator_ == address(0) || owner_ == provider_
@@ -124,7 +123,6 @@ contract SeatVault is IERC1271, IERC721Receiver, ReentrancyGuard {
         identityRegistry = identityRegistry_;
         relayOrigin = relayOrigin_;
         relayOriginHash = keccak256(bytes(relayOrigin_));
-        escrowAgreementId = escrowAgreementId_;
     }
 
     // ---------------------------------------------------------------- custody
@@ -381,14 +379,10 @@ contract SeatVaultFactory {
     }
 
     /// @notice The caller becomes the vault's owner (the NFT depositor).
-    function create(
-        address provider,
-        address operator,
-        uint256 tokenId,
-        uint16 providerBps,
-        bytes32 deviceKey,
-        uint256 escrowAgreementId
-    ) external returns (SeatVault vault) {
+    function create(address provider, address operator, uint256 tokenId, uint16 providerBps, bytes32 deviceKey)
+        external
+        returns (SeatVault vault)
+    {
         vault = new SeatVault(
             msg.sender,
             provider,
@@ -399,8 +393,7 @@ contract SeatVaultFactory {
             providerBps,
             deviceKey,
             identityRegistry,
-            relayOrigin,
-            escrowAgreementId
+            relayOrigin
         );
         vaults.push(address(vault));
         emit VaultCreated(address(vault), msg.sender, provider, tokenId, providerBps);

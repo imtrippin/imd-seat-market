@@ -34,7 +34,7 @@ contract SeatVaultRound3 is Test {
 
     function _newVault(uint16 bps) internal returns (SeatVault) {
         return new SeatVault(
-            owner, provider, vm.addr(OPERATOR_KEY), seats, TOKEN, reward, bps, DEVICE, address(registry), RELAY, 0
+            owner, provider, vm.addr(OPERATOR_KEY), seats, TOKEN, reward, bps, DEVICE, address(registry), RELAY
         );
     }
 

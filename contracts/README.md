@@ -1,82 +1,76 @@
-# SeatEscrow (contracts)
+# SeatVault (contracts)
 
-The on-chain piece of Seat Market: **a rental with a security deposit**, one agreement per hosted seat. This is the simplified model the project owner chose on 2026-09-28 after the floor-and-acknowledgment version was built and reviewed; its reports and tests are kept locally under `review/`; the git history was rebuilt on 2026-09-28, so its commits no longer exist.
+The on-chain piece of Seat Market: **one vault per hosted seat**. The owner puts the seat NFT in the vault, the host pairs its worker to it, every reward that reaches the vault is split by a fixed percentage, and the owner can take the NFT back at any time. There is no fee, no deposit and no second contract.
 
-**Status: local Foundry project with unit, fuzz, invariant and review-probe suites. Deployed only as a mock rehearsal on Base Sepolia with throwaway keys; not on mainnet, not paired with IMD. Not audited.**
+**Status: local Foundry project with unit, fuzz, sequence-fuzz and review-probe suites. Deployed only as a mock rehearsal on Base Sepolia with throwaway keys; not on mainnet, not paired with IMD. Not audited.**
 
 ## The rule, in one sentence
 
-You pay rent that accrues per second at an agreed daily rate; the host can collect unpaid rent from your deposit at any time; either party can end the rental; you can immediately withdraw whatever deposit is left after unpaid rent; and you separately fund the promised reward share for the host to claim.
+You keep an agreed percentage of every reward that reaches your vault and the host receives the rest; the host can never move the NFT, and you can withdraw it whenever you want.
 
 ## What the contract does
 
-- **Terms** (immutable per agreement): owner, provider, token, `dailyFee`, `shareBps` (the reward share the owner promises; informational, not enforced), `requiredDeposit` (at least one day of fee; zero for a pure revenue-share listing), and `docHash` of the full off-chain terms. `approve` must present `termsDigest(...)`, which the contract derives from those numbers, the document hash, its own address and the chain id, so a counterparty commits to real terms rather than a label.
-- **Setup**: `propose` by either party (counts as their approval), `approve` by the other, `deposit` by the owner, `activate` by the owner once the deposit is funded. Only the owner can start the clock.
-- **Fee**: accrues per second at `dailyFee / 24 h` from activation until either party calls `end`. The provider may `draw` unpaid fee from the deposit at any time, capped by what the deposit holds. The owner may `payFee` with fresh funds instead, capped by what is owed, so nothing can be prepaid. Top-ups via `deposit` never pay anyone by themselves.
-- **Share**: `payShare(amount, payoutRef)` by the owner, any time after activation including after exit, with the payout's transaction hash as the reference. Recorded in an event, never counted against fee, never drawn from the deposit.
-- **Exit**: `end` by either party freezes the fee. `refund` by the owner is immediate and releases the deposit beyond unpaid fee; unpaid fee stays reserved for the provider to `draw`. `claim` by the provider pulls everything funded and works after exit.
-- **Safety**: every stored amount and rate, including the provider's unclaimed balance on every path that grows it, is bounded by 2^128 so nothing overflows (claim before it would exceed the bound); transfers in and out are checked for the exact amount, so fee-on-transfer, outbound-tax and similar tokens are refused and one agreement can never spend another's deposit; every money entrypoint is reentrancy-guarded; no admin, no upgrade path, no sweep.
-- **Supported assets**: one plain, fixed-balance ERC-20 (IMD is one). Transfers in and out are checked for the exact amount on both sides, so fee-on-transfer, recipient-tax and sender-surcharge tokens are refused. Deposits are pooled per asset, so a token whose balances change outside transfers (rebasing, upgradeable, pausable, or with a dishonest balanceOf) can leave a later claimant short; that cannot be detected on-chain and is why the first product pins one verified asset.
-- **Exposure**: `unsecured(id)` = unpaid fee beyond the deposit. A host's pause rule watches that number; the deposit size is the host's tolerance in days.
+- **Terms** (immutable per vault, pinned by the factory): owner, host (`provider`), the host's pairing key (`operator`, distinct from both), the seat collection and token id, the reward token, the host's share in basis points, the host's device key, the identity registry and the relay origin.
+- **Custody**: `deposit()` moves the NFT in (only the agreed token, only from the owner, only once). `withdrawNFT(to)` moves it out whenever the vault actually holds it, before or after the agreement ended, even if it arrived by a plain transfer, without the host and without any call to the reward token. Withdrawal ends the agreement and clears any pairing approval.
+- **Pairing** (ERC-1271): the owner approves one pairing at a time with `approvePairing(nonce, expiresAt, relayOrigin)`; the vault answers `isValidSignature` only for that digest, unexpired, on this chain, signed by the host's pairing key or the owner. Changing the device key, revoking, ending or withdrawing clears it. A device IMD already enrolled is not disconnected by the vault; moving the NFT out is what makes it stale on IMD's side.
+- **Rewards**: `settle(token)` allocates every unit that arrived since the last settlement (owner gets the floor of its share, host the remainder); `claim(token)` settles first and pays the caller's own allocation exactly. Any ERC-20 that lands in the vault is split the same way. `registerAgent(data)` lets the owner send the ERC-8004 registration call through the vault to the pinned registry; `rescueERC721` returns any other token, such as the agent NFT.
+- **Safety**: exact-amount checks on every payout; reentrancy guards on every state-changing entrypoint; full-precision split; no admin, no upgrade path, no sweep.
+- **Supported assets**: one plain, fixed-balance ERC-20 (IMD is one). A token whose balances change outside transfers (rebasing, upgradeable, pausable, dishonest `balanceOf`) can leave the last claimant short; `shortfall(token)` shows the gap. The seat's return never depends on the reward token.
 
 ## What it deliberately does not do
 
-- It cannot see rewards, which land in the owner's wallet, so the share is honour-based and public. Knowing the payer contract makes disputes mechanical, not enforceable.
-- It does not observe pairing, NFT transfers or uptime, and it does not pause a worker. The public IMD standing routes (documented at imd.fun/docs) are the evidence source for service and disputes.
+- It cannot make IMD pay the vault: only rewards that actually reach it are split. Where a payout lands depends on IMD's routing (the holder at payout time, or an earlier snapshot), which is unverified.
+- It does not judge service, attribute rewards to jobs, guarantee any income to the host, or stop the owner from withdrawing right before a payout. Hosts price those risks into their percentage.
+- It does not observe uptime or pause a worker. The public IMD standing routes (imd.fun/docs) are the evidence source for service and disputes.
 
 ## Layout
 
 ```text
-src/SeatEscrow.sol                 the contract (Solidity 0.8.30, OpenZeppelin 5.4.0 SafeERC20 + ReentrancyGuard)
-test/SeatEscrow.t.sol              unit tests (incl. the owner's scenarios) + a fuzz of the fee clock against a naive computation
-test/SeatEscrowInvariants.t.sol    handler-driven invariants: cash conservation, fee never settled beyond accrual, refunds
-                                   keep unpaid fee reserved, fee frozen at exit, escrow balance = reserve + claim
-test/SeatEscrowReviewProbes.t.sol  probes carried over from Codex's review: token callbacks against all six money
-                                   entrypoints, outbound-tax tokens, same-block sequences, late payment after refund
-test/Mocks.sol                     MockERC20 (stands in for IMD on a testnet) and a fee-on-transfer token
-script/Deploy.s.sol                testnet deployment of the mock token and the escrow
+src/SeatVault.sol                 the vault and its factory (Solidity 0.8.30, OpenZeppelin 5.4.0)
+test/SeatVault.t.sol              unit tests: custody, pairing digests, splits, claims, exit, reentrancy, token edge cases
+test/SeatVaultReviewProbes.t.sol  regressions from the first review round (custody after end, single approval, registries)
+test/SeatVaultV2Probes.t.sol      regressions from the second round (malformed reward tokens, two-vault custody fuzz)
+test/codex/SeatVaultRound3.t.sol  the third round's probes
+test/Mocks.sol, test/VaultMocks.sol  the mock token, collection, registry and hostile tokens
+script/DeployVault.s.sol          testnet deployment of mocks, factory and one vault
+script/pair-vault.mjs             the pairing helper (prepare/complete, dry run by default; see the file header)
+script/testnet-walkthrough.sh     the asserting lifecycle rehearsal against a testnet deployment
 ```
 
 ## Run
 
 ```text
 forge build
-forge test              # 89 tests across 8 suites (unit, fuzz, review probes, round-3 probes; the invariant suite counts as one grouped test, 64 runs x 64 calls)
+forge test              # unit, fuzz and review-probe suites (the count is printed by CI)
 forge test --gas-report
 forge fmt --check src test script
 ```
 
 Foundry 1.8.3 is the pinned toolchain (the same release the IMD verifier runs). Dependencies are git submodules pinned in `foundry.lock`: `lib/openzeppelin-contracts` v5.4.0, `lib/forge-std` v1.16.2.
 
-## Gas (historical unit suite, `forge test --gas-report`)
+## Gas (unit suites, `forge test --gas-report`, median)
 
-These figures predate the additional incoming sender-balance check on 2026-09-29. Generate a fresh gas report for the current source before estimating transaction costs.
+| Function | Gas |
+| --- | ---: |
+| factory `create` (deploys a vault) | 2,115k |
+| deposit | 93k |
+| approvePairing | 97k |
+| settle | 49k |
+| claim | 86k |
+| withdrawNFT | 75k |
+| end | 47k |
 
-| Function | Typical | Max |
-| --- | ---: | ---: |
-| deposit | 95k | 95k |
-| payFee | 69k | 103k |
-| payShare | 70k | 96k |
-| draw | 52k | 86k |
-| claim | 73k | 73k |
-| refund | 61k | 64k |
-| propose | 230k | 230k |
-
-Constant per call; nothing grows with the agreement's history.
+The vault lives on the seat's chain, so mainnet gas applies; a clone factory (EIP-1167) would cut creation cost by roughly ten times and is the obvious follow-up if listings are many.
 
 ## Review history
 
-- 2026-09-29, Codex and Claude final-readiness reviews: incoming sender-surcharge tokens were accepted despite the documented exact-amount guarantee. Fixed after owner approval: `_pullExact` checks both the owner's debit and the escrow's receipt. Four regressions in `test/SeatEscrowV2Probes.t.sol` cover initial deposit, top-up, fee payment and share payment after exit, including full rollback of balances, allowance and both agreement ledgers. All four failed before the fix and pass after it; the full Foundry suite passes 89 tests. The supported-asset assumptions remain necessary.
-- 2026-09-28, Codex, first review (floor model): two medium findings (oversized-acknowledgment overflow; outgoing transfers not checked for the exact amount), both fixed the same day; its probes that still apply live in `test/SeatEscrowReviewProbes.t.sol`. Report and original tests kept locally under `review/`.
-- 2026-09-28, Codex, second review (rental model): B1 medium, claims and refunds could succeed while delivering less with a recipient-tax token (fixed: `_pushExact` now checks the recipient side too); B2 low, `payFee` and `draw` bypassed the 2^128 claim cap (fixed: every path that grows the claim checks it); T1 low, a refund invariant was a tautology (replaced by exact per-refund and per-draw checks); P1 medium prerequisite, pooled backing needs a fixed-balance honest asset (documented above); D1 low, the one-sentence rule overstated (rewritten); P2 low, the deploy script now refuses any chain but Sepolia. Its reproductions became regressions in `test/SeatEscrowV2Probes.t.sol`.
-
-## Vault experiment (2026-09-28)
-
-`src/SeatVault.sol` is an isolated prototype of an NFT-holding vault that answers ERC-1271 for owner-approved pairings and splits rewards that reach it; see `VAULT-DESIGN.md`. It composes with this escrow (rent and deposit stay here). It was rehearsed on Base Sepolia against mocks (`script/testnet-walkthrough.sh`), reviewed twice by Codex (findings fixed; the reproductions are `test/SeatVaultReviewProbes.t.sol` and `test/SeatVaultV2Probes.t.sol`), and has not been paired with IMD or deployed on mainnet.
+- 2026-09-28, Codex, round one: custody could strand the seat after a plain transfer and a host `end()`; an unreadable or huge reward-token balance blocked withdrawal; approvals survived device changes and several coexisted; a safe-minting registry could not deliver its agent token; script expiry and guard issues. All fixed; regressions in `test/SeatVaultReviewProbes.t.sol` and `test/pair-vault.test.mjs`.
+- 2026-09-28, Codex, round two: malformed `balanceOf` return data still trapped the seat (fixed: withdrawal makes no call to the reward token); the rehearsal script could execute a call twice (fixed: one signed transaction per call, never rebuilt); the pairing helper ignored IMD's code expiry and accepted fractional TTLs (fixed). Regressions in `test/SeatVaultV2Probes.t.sol` and six more script tests.
+- 2026-09-28, Codex, round three: three low script findings (nonce read failure, receipts for another hash, token-id encoding), all fixed; probes under `test/codex/`.
+- 2026-09-29, Codex and Claude readiness reviews, then the owner's decision to ship the vault alone: the rental escrow that used to sit beside it (a daily fee drawn from a deposit) was removed from the tree with its suites; its review history is in `../review/HISTORY.md` and the code in git history.
 
 ## Next steps
 
-1. Second review of this version (`../docs/SWARM-REVIEW-BRIEF.md` for the swarm, once a public mirror or archive exists; Codex meanwhile).
-2. Sepolia deployment with a throwaway key and testnet ETH (`script/Deploy.s.sol`); record the addresses here.
-3. Wire the site to the contract: wallet connector, the six money actions, the `unsecured` warning, and a payout observer that pre-fills `payShare` from the Disperse contract's transfers.
-4. Chain and deposit asset are still open questions (mainnet where rewards land versus Base for cheap daily transactions; IMD versus a stablecoin).
+1. Independent review (`../docs/SWARM-REVIEW-BRIEF.md`).
+2. The live questions only IMD can answer (pairing with a contract holder, payouts to a contract holder, agent registration through the vault), each as a separately approved step with one spare seat.
+3. Wire the site to the factory and the vault: create, deposit, approve pairing, claim, withdraw.

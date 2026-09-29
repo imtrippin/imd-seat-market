@@ -73,8 +73,7 @@ contract SeatVaultReviewProbes is Test {
             3000,
             DEVICE,
             registryAddress,
-            RELAY,
-            0
+            RELAY
         );
     }
 
@@ -188,11 +187,11 @@ contract SeatVaultReviewProbes is Test {
     function test_operatorMustBeADistinctKey() public {
         vm.expectRevert(SeatVault.InvalidTerms.selector);
         new SeatVault(
-            owner, provider, owner, IERC721(address(seats)), TOKEN, reward, 3000, DEVICE, address(registry), RELAY, 0
+            owner, provider, owner, IERC721(address(seats)), TOKEN, reward, 3000, DEVICE, address(registry), RELAY
         );
         vm.expectRevert(SeatVault.InvalidTerms.selector);
         new SeatVault(
-            owner, provider, provider, IERC721(address(seats)), TOKEN, reward, 3000, DEVICE, address(registry), RELAY, 0
+            owner, provider, provider, IERC721(address(seats)), TOKEN, reward, 3000, DEVICE, address(registry), RELAY
         );
     }
 

@@ -49,6 +49,10 @@ Each item below says which kind of evidence supports it.
 - **Fixed with the owner's approval.** `_pullExact` now checks the sender's debit as well as the escrow's receipt; four regressions in `contracts/test/SeatEscrowV2Probes.t.sol` cover initial deposit, top-up, payFee and post-exit payShare with full rollback on rejection. The full Foundry suite passes 89 tests across 8 suites. The supported-asset assumptions remain necessary: balances must be honest and fixed outside transfers.
 - **Prepared for publication.** The review brief was rewritten for the two contracts. The git history was rewritten to drop testnet deployment logs and one sentence with per-wallet payout totals, and the legacy simulation left the tree. A contract-only source archive with a manifest and SHA-256 is built from the committed tree by the local packaging script.
 
+## Vault-only decision (2026-09-29)
+
+The owner chose the simplest possible product with the fewest ways to be exploited: the vault alone. A listing's only number is the host's percentage; there is no fee and no deposit. `SeatEscrow` (the rental with a security deposit) and its four suites, the escrow deployment script and the vault's informational `escrowAgreementId` field were removed from the tree the same day; the escrow's review history above stays as the record, and the code is in git history should a fee-based listing ever be wanted again. What the host gives up without it is stated in `contracts/VAULT-DESIGN.md`: no guaranteed income, and no protection against an owner who withdraws right before a payout. The escrow was also the one design that needed nothing from IMD; the vault depends on IMD accepting a contract holder at pairing and paying a contract holder, which remain unverified.
+
 ## What none of this establishes
 
 These reviews and local tests do not constitute a production audit or establish live IMD compatibility. The reward figures above are three dated distributions, not an income schedule. Mock rehearsals on a testnet prove the scripted lifecycle, not acceptance by IMD or its payout routing.

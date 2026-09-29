@@ -3,7 +3,6 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {SeatVault, SeatVaultFactory} from "../src/SeatVault.sol";
-import {SeatEscrow} from "../src/SeatEscrow.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {MockERC20} from "./Mocks.sol";
@@ -46,7 +45,7 @@ contract SeatVaultTest is Test {
         factory = new SeatVaultFactory(IERC721(address(seats)), IERC20(address(imd)), address(registry), RELAY);
         seats.mint(owner, TOKEN);
         vm.prank(owner);
-        vault = factory.create(provider, operator, TOKEN, PROVIDER_BPS, DEVICE, 0);
+        vault = factory.create(provider, operator, TOKEN, PROVIDER_BPS, DEVICE);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -205,7 +204,7 @@ contract SeatVaultTest is Test {
         address ownerAddr = vm.addr(ownerKey);
         seats.mint(ownerAddr, 3);
         vm.prank(ownerAddr);
-        SeatVault v2 = factory.create(provider, operator, 3, PROVIDER_BPS, DEVICE, 0);
+        SeatVault v2 = factory.create(provider, operator, 3, PROVIDER_BPS, DEVICE);
         vm.startPrank(ownerAddr);
         seats.approve(address(v2), 3);
         v2.deposit();
@@ -419,35 +418,10 @@ contract SeatVaultTest is Test {
         assertEq(vault.claim(IERC20(address(projectToken))), 700);
     }
 
-    function test_rentAndCollateralStayInTheEscrowRewardsStayInTheVault() public {
-        _deposit();
-        SeatEscrow escrow = new SeatEscrow();
-        imd.mint(owner, 100e18);
-        vm.prank(provider);
-        uint256 id = escrow.propose(owner, provider, IERC20(address(imd)), 1e18, PROVIDER_BPS, 1e18, keccak256("doc"));
-        bytes32 digest =
-            escrow.termsDigest(owner, provider, IERC20(address(imd)), 1e18, PROVIDER_BPS, 1e18, keccak256("doc"));
-        vm.startPrank(owner);
-        escrow.approve(id, digest);
-        imd.approve(address(escrow), type(uint256).max);
-        escrow.deposit(id, 5e18);
-        escrow.activate(id);
-        vm.stopPrank();
-        _reward(100e18);
-        vm.warp(block.timestamp + 1 days);
-        vm.prank(provider);
-        escrow.draw(id);
-        assertEq(imd.balanceOf(address(escrow)), 5e18, "the deposit and the drawn fee never left the escrow");
-        assertEq(vault.pending(IERC20(address(imd))), 100e18, "the vault saw only the reward");
-        vm.prank(provider);
-        assertEq(vault.claim(IERC20(address(imd))), 30e18);
-        assertEq(escrow.stateOf(id).reserve, 4e18, "escrow accounting unaffected by vault claims");
-    }
-
     function test_twoVaultsAttributeSeparately() public {
         seats.mint(owner, 2049);
         vm.prank(owner);
-        SeatVault second = factory.create(provider, operator, 2049, 5000, keccak256("device two"), 0);
+        SeatVault second = factory.create(provider, operator, 2049, 5000, keccak256("device two"));
         assertEq(factory.count(), 2);
         assertEq(factory.vaults(1), address(second));
         _deposit();
@@ -473,7 +447,7 @@ contract SeatVaultTest is Test {
             new SeatVaultFactory(IERC721(address(seats)), IERC20(address(hooked)), address(registry), RELAY);
         seats.mint(owner, 5);
         vm.prank(owner);
-        SeatVault v = f.create(provider, operator, 5, PROVIDER_BPS, DEVICE, 0);
+        SeatVault v = f.create(provider, operator, 5, PROVIDER_BPS, DEVICE);
         vm.startPrank(owner);
         seats.approve(address(v), 5);
         v.deposit();
@@ -492,7 +466,7 @@ contract SeatVaultTest is Test {
             new SeatVaultFactory(IERC721(address(seats)), IERC20(address(taxed)), address(registry), RELAY);
         seats.mint(owner, 6);
         vm.prank(owner);
-        SeatVault v = f.create(provider, operator, 6, PROVIDER_BPS, DEVICE, 0);
+        SeatVault v = f.create(provider, operator, 6, PROVIDER_BPS, DEVICE);
         vm.startPrank(owner);
         seats.approve(address(v), 6);
         v.deposit();
@@ -512,7 +486,7 @@ contract SeatVaultTest is Test {
             new SeatVaultFactory(IERC721(address(seats)), IERC20(address(shrinking)), address(registry), RELAY);
         seats.mint(owner, 8);
         vm.prank(owner);
-        SeatVault v = f.create(provider, operator, 8, PROVIDER_BPS, DEVICE, 0);
+        SeatVault v = f.create(provider, operator, 8, PROVIDER_BPS, DEVICE);
         vm.startPrank(owner);
         seats.approve(address(v), 8);
         v.deposit();
@@ -548,17 +522,17 @@ contract SeatVaultTest is Test {
     function test_factoryPinsTermsAndRejectsBadOnes() public {
         vm.startPrank(owner);
         vm.expectRevert(SeatVault.InvalidTerms.selector);
-        factory.create(owner, operator, 1, PROVIDER_BPS, DEVICE, 0); // owner == provider
+        factory.create(owner, operator, 1, PROVIDER_BPS, DEVICE); // owner == provider
         vm.expectRevert(SeatVault.InvalidTerms.selector);
-        factory.create(provider, operator, 1, 10_001, DEVICE, 0); // > 100%
+        factory.create(provider, operator, 1, 10_001, DEVICE); // > 100%
         vm.expectRevert(SeatVault.InvalidTerms.selector);
-        factory.create(provider, operator, 1, PROVIDER_BPS, bytes32(0), 0); // no device
+        factory.create(provider, operator, 1, PROVIDER_BPS, bytes32(0)); // no device
         vm.expectRevert(SeatVault.InvalidTerms.selector);
-        factory.create(provider, address(0), 1, PROVIDER_BPS, DEVICE, 0); // no operator
+        factory.create(provider, address(0), 1, PROVIDER_BPS, DEVICE); // no operator
         vm.expectRevert(SeatVault.InvalidTerms.selector);
-        factory.create(provider, owner, 1, PROVIDER_BPS, DEVICE, 0); // operator must not be the owner
+        factory.create(provider, owner, 1, PROVIDER_BPS, DEVICE); // operator must not be the owner
         vm.expectRevert(SeatVault.InvalidTerms.selector);
-        factory.create(provider, provider, 1, PROVIDER_BPS, DEVICE, 0); // nor the provider
+        factory.create(provider, provider, 1, PROVIDER_BPS, DEVICE); // nor the provider
         vm.stopPrank();
         assertEq(address(vault.collection()), address(seats));
         assertEq(address(vault.rewardToken()), address(imd));
