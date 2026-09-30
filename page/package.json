@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "node build.mjs --check",
-    "test": "node --test test/"
+    "test": "node --test --test-force-exit test/guards.test.mjs test/browser.test.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
