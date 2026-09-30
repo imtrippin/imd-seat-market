@@ -17,7 +17,7 @@ var __export = (target, all) => {
 var define_CONFIG_default;
 var init_define_CONFIG = __esm({
   "<define:__CONFIG__>"() {
-    define_CONFIG_default = { chainId: 1, rpcUrl: null, imdApi: "https://api.imd.fun", factory: "0x0000000000000000000000000000000000000000", collection: "0x0000eC93127BAA929E58E97dd0095A2BFb38ec1D", rewardToken: "0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7", registrar: "0xde152AfB7db5373F34876E1499fbD893A82dD336", relayOrigin: "https://api.imd.fun", explorer: "https://etherscan.io", rewardSymbol: "IMD", rewardDecimals: 18 };
+    define_CONFIG_default = { chainId: 1, rpcUrl: null, imdApi: "https://api.imd.fun", factory: "0x0000000000000000000000000000000000000000", collection: "0x0000eC93127BAA929E58E97dd0095A2BFb38ec1D", rewardToken: "0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7", registrar: "0xde152AfB7db5373F34876E1499fbD893A82dD336", relayOrigin: "https://api.imd.fun", factoryBlock: 0, explorer: "https://etherscan.io", rewardSymbol: "IMD", rewardDecimals: 18 };
   }
 });
 
@@ -17782,6 +17782,7 @@ function custom(provider, config = {}) {
 }
 
 // node_modules/viem/_esm/index.js
+init_contract();
 init_encodeFunctionData();
 init_getAddress();
 
@@ -18894,12 +18895,18 @@ var erc721Abi = parseAbi([
   "function safeTransferFrom(address from, address to, uint256 tokenId)"
 ]);
 var erc20Abi2 = parseAbi(["function balanceOf(address account) view returns (uint256)"]);
-var registrarAbi = parseAbi(["function isController(uint256 agentId, address account) view returns (bool)"]);
+var registrarAbi = parseAbi([
+  "function isController(uint256 agentId, address account) view returns (bool)",
+  "function bindingOf(uint256 agentId) view returns (uint8 standard, address tokenContract, uint256 tokenId)",
+  "error UnknownAgent(uint256 agentId)"
+]);
 var AGENT_REGISTERED = parseAbiItem("event AgentRegistered(uint256 indexed agentId, bytes data)");
+var VAULT_CREATED = parseAbiItem("event VaultCreated(address indexed vault, address indexed owner, address indexed provider, uint256 tokenId, uint16 providerBps)");
 function providerClient(provider) {
   return createPublicClient({ transport: custom(provider) });
 }
 var s = (v) => typeof v === "bigint" ? v.toString() : v;
+var lower = (a) => String(a || "").toLowerCase();
 async function readVault(client, vault2) {
   const r = (functionName, args = []) => client.readContract({ address: vault2, abi: SeatVault_default, functionName, args });
   const [owner, provider, operator, collection, tokenId, rewardToken, providerBps, registrar, relayOrigin, deviceKey] = await Promise.all(["owner", "provider", "operator", "collection", "tokenId", "rewardToken", "providerBps", "registrar", "relayOrigin", "deviceKey"].map((f) => r(f)));
@@ -18944,12 +18951,39 @@ async function readVault(client, vault2) {
     rewardBalance: s(rewardBalance)
   };
 }
-async function vaultControlsAgent(client, registrar, agentId, vault2) {
-  try {
-    return await client.readContract({ address: registrar, abi: registrarAbi, functionName: "isController", args: [BigInt(agentId), vault2] });
-  } catch {
+async function isFactoryVault(client, factory, vault2, { maxScan = 400, fromBlock = 0n } = {}) {
+  const count = Number(await client.readContract({ address: factory, abi: SeatVaultFactory_default, functionName: "count" }));
+  if (count <= maxScan) {
+    for (let i = count - 1; i >= 0; i--) {
+      const a = await client.readContract({ address: factory, abi: SeatVaultFactory_default, functionName: "vaults", args: [BigInt(i)] });
+      if (lower(a) === lower(vault2)) return true;
+    }
     return false;
   }
+  const logs = await client.getLogs({ address: factory, event: VAULT_CREATED, args: { vault: getAddress(vault2) }, fromBlock: BigInt(fromBlock), toBlock: "latest" });
+  return logs.length > 0;
+}
+async function agentBinding(client, registrar, agentId, account) {
+  let b;
+  try {
+    b = await client.readContract({ address: registrar, abi: registrarAbi, functionName: "bindingOf", args: [BigInt(agentId)] });
+  } catch (e) {
+    const reverted = typeof e.walk === "function" ? e.walk((x) => x instanceof ContractFunctionRevertedError) : null;
+    if (reverted && reverted.data && reverted.data.errorName === "UnknownAgent") return { known: false, tokenContract: null, tokenId: null, controller: false };
+    return null;
+  }
+  let controller = false;
+  try {
+    controller = await client.readContract({ address: registrar, abi: registrarAbi, functionName: "isController", args: [BigInt(agentId), account] });
+  } catch {
+    return null;
+  }
+  return { known: true, tokenContract: b[1], tokenId: s(b[2]), controller };
+}
+async function vaultControlsAgent(client, registrar, agentId, vault2, collection, tokenId) {
+  const b = await agentBinding(client, registrar, agentId, vault2);
+  if (!b) return null;
+  return b.controller && lower(b.tokenContract) === lower(collection) && String(b.tokenId) === String(tokenId);
 }
 var vaultCall = (functionName, args = []) => encodeFunctionData({ abi: SeatVault_default, functionName, args });
 var tx = {
@@ -19085,17 +19119,17 @@ function validateHostingOffer(o, expect) {
   }
   return problems;
 }
-function checkPairingOfferAgainstVault(artifact2, vault2, config, nowMs = Date.now()) {
-  const problems = validateArtifact(artifact2);
-  if (artifact2.vault && artifact2.vault.toLowerCase() !== vault2.address.toLowerCase()) problems.push("the offer is for another vault");
-  if (artifact2.message && artifact2.message.deviceKey !== String(vault2.deviceKey).toLowerCase()) problems.push("the offer's device key is not the vault's");
-  if (artifact2.message && String(artifact2.message.tokenId) !== String(vault2.tokenId)) problems.push("the offer's token is not the vault's seat");
-  if (artifact2.message && artifact2.message.relayOrigin !== config.relayOrigin) problems.push("the offer's relay is not the agreed one");
-  if (artifact2.chain !== config.chainId) problems.push("the offer is for another chain");
-  if (String(artifact2.collection || "").toLowerCase() !== config.collection.toLowerCase()) problems.push("the offer names another collection");
-  if (artifact2.message && artifact2.message.expiresAt > Math.floor(nowMs / 1e3) + 3600) problems.push("the offer's expiry is beyond the vault's one-hour window");
-  if (artifact2.intent) problems.push(...validateIntent(artifact2.intent, { registrar: config.registrar, chain: config.chainId, collection: config.collection, token: vault2.tokenId }));
-  if (artifact2.message) problems.push(...expiryProblems(artifact2, nowMs));
+function checkPairingOfferAgainstVault(artifact, vault2, config, nowMs = Date.now()) {
+  const problems = validateArtifact(artifact);
+  if (artifact.vault && artifact.vault.toLowerCase() !== vault2.address.toLowerCase()) problems.push("the offer is for another vault");
+  if (artifact.message && artifact.message.deviceKey !== String(vault2.deviceKey).toLowerCase()) problems.push("the offer's device key is not the vault's");
+  if (artifact.message && String(artifact.message.tokenId) !== String(vault2.tokenId)) problems.push("the offer's token is not the vault's seat");
+  if (artifact.message && artifact.message.relayOrigin !== config.relayOrigin) problems.push("the offer's relay is not the agreed one");
+  if (artifact.chain !== config.chainId) problems.push("the offer is for another chain");
+  if (String(artifact.collection || "").toLowerCase() !== config.collection.toLowerCase()) problems.push("the offer names another collection");
+  if (artifact.message && artifact.message.expiresAt > Math.floor(nowMs / 1e3) + 3600) problems.push("the offer's expiry is beyond the vault's one-hour window");
+  if (artifact.intent) problems.push(...validateIntent(artifact.intent, { registrar: config.registrar, chain: config.chainId, collection: config.collection, token: vault2.tokenId }));
+  if (artifact.message) problems.push(...expiryProblems(artifact, nowMs));
   return problems;
 }
 
@@ -19106,11 +19140,11 @@ var STEPS = [
   { key: "deposit", title: "Move the NFT in" },
   { key: "pair", title: "Approve the pairing" },
   { key: "register", title: "Register the agent" },
-  { key: "hosted", title: "Hosted" },
+  { key: "done", title: "Your side is done" },
   { key: "exit", title: "Exit" }
 ];
 var zero32 = "0x" + "0".repeat(64);
-var lower = (a) => String(a || "").toLowerCase();
+var lower2 = (a) => String(a || "").toLowerCase();
 function derive(snap, nowSec = Math.floor(Date.now() / 1e3)) {
   const v = snap.vault;
   const owner = [];
@@ -19122,14 +19156,17 @@ function derive(snap, nowSec = Math.floor(Date.now() / 1e3)) {
     owner.push({ id: "create", label: "Create the vault", hint: "Paste the host's offer string and your seat's token id. One transaction to the factory." });
     host.push({ id: "wait", label: "Send the owner your hosting offer string (helper: offer)", passive: true });
   } else {
-    const seatInVault = lower(v.seatOwner) === lower(v.address);
+    const seatInVault = lower2(v.seatOwner) === lower2(v.address);
     const approvalLive = v.approvedDigest && v.approvedDigest !== zero32 && v.approvedUntil > nowSec;
     const a = snap.artifact || null;
-    const offerLive = !!a && a.message.expiresAt > nowSec && (!a.codeExpiresAt || a.codeExpiresAt > nowSec * 1e3);
-    const approvedThis = !!a && approvalLive && lower(v.approvedDigest) === lower(a.digest);
+    const approvedThis = !!a && approvalLive && lower2(v.approvedDigest) === lower2(a.digest);
+    const approvedRecord = snap.approved && (!a || lower2(snap.approved.digest) === lower2(a.digest)) ? snap.approved : null;
+    const pairingDone = approvedThis || !!approvedRecord;
     const pendingApproval = (snap.pendingHashes || []).length > 0;
     const imdSeat2 = snap.imdSeat || null;
-    const registered = !!(imdSeat2 && imdSeat2.agentId) || snap.agentReusable === true;
+    const reuse = snap.agentReusable;
+    const registered = !!snap.registered || reuse === true;
+    const registrationUnknown = !registered && reuse === null && !!(imdSeat2 && imdSeat2.agentId);
     if (v.ended && !seatInVault) {
       step = "exit";
       notes.push("The NFT is back with the owner; the agreement is over. Rewards that still arrive here keep the same split.");
@@ -19139,29 +19176,28 @@ function derive(snap, nowSec = Math.floor(Date.now() / 1e3)) {
     } else if (!v.held) {
       step = "deposit";
       if (seatInVault) owner.push({ id: "syncHeld", label: "Record the NFT as held", hint: "It arrived by a plain transfer, so the vault has not recorded it yet." });
-      else if (lower(v.seatOwner) === lower(v.owner)) owner.push({ id: "deposit", label: "Move my NFT into the vault", hint: "One safe transfer from your wallet; the vault records it on arrival." });
+      else if (lower2(v.seatOwner) === lower2(v.owner)) owner.push({ id: "deposit", label: "Move my NFT into the vault", hint: "One safe transfer from your wallet; the vault records it on arrival." });
       else notes.push(`The NFT is held by ${v.seatOwner}, not by the owner or the vault; only the owner's wallet can move it in.`);
       host.push({ id: "wait", label: "Waiting for the owner to move the NFT in", passive: true });
-    } else if (!imdSeat2 && !registered) {
+    } else if (!pairingDone) {
       step = "pair";
-      if (pendingApproval) {
-        owner.push({ id: "wait", label: "Your approval is waiting to be mined", passive: true });
-      } else if (!offerLive) {
-        owner.push({ id: "pairing-offer", label: "Paste the host's pairing string", hint: "The host runs the helper for this vault and sends you the string. It lasts five minutes." });
-        if (approvalLive) notes.push("An earlier approval is still live on the vault; it expires by itself.");
-      } else if (!approvedThis) {
-        owner.push({ id: "approvePairing", label: "Approve the pairing", hint: "One transaction with the exact nonce, expiry and relay from the string. It must be mined before the code expires." });
-      } else {
-        owner.push({ id: "wait", label: "Approved. The host completes the pairing now", passive: true });
-      }
+      if (pendingApproval) owner.push({ id: "wait", label: "Your approval is waiting to be mined", passive: true });
+      else if (!a) owner.push({ id: "pairing-offer", label: "Paste the host's pairing string", hint: "The host runs the helper for this vault and sends you the string. It lasts five minutes." });
+      else owner.push({ id: "approvePairing", label: "Approve the pairing", hint: "One transaction with the exact nonce, expiry and relay from the string. It must be mined before the code expires." });
+      if (!a && approvalLive) notes.push("An earlier approval is still live on the vault; it expires by itself.");
       host.push({ id: "wait", label: "Helper: waiting for the approval, then completing", passive: true });
+    } else if (registrationUnknown) {
+      step = "register";
+      notes.push("IMD lists an agent for this seat, but the registrar could not be checked. Nothing is registered until that check works, so no registration is paid for twice.");
+      owner.push({ id: "wait", label: "Checking the existing agent", passive: true });
     } else if (!registered) {
       step = "register";
-      if (a && a.intent) owner.push({ id: "registerAgent", label: "Register the agent", hint: "IMD's registration, sent through the vault. Once per seat, unless an agent already exists." });
+      if (snap.intent) owner.push({ id: "registerAgent", label: "Register the agent", hint: "IMD's registration for this seat, sent through the vault. Skipped when an agent already exists for it." });
       else owner.push({ id: "pairing-offer", label: "Paste the host's pairing string again (it carries the registration)", hint: "The registration intent travels with the pairing string." });
       host.push({ id: "wait", label: "Helper: binds the agent on IMD after the registration", passive: true });
     } else {
-      step = "hosted";
+      step = "done";
+      notes.push(imdSeat2 ? `IMD lists this seat${imdSeat2.agentId ? ` with agent ${imdSeat2.agentId}` : ""}${imdSeat2.accepted !== void 0 ? `, ${imdSeat2.accepted} accepted jobs` : ""}. Your host confirms whether the new device is paired; this page cannot see that.` : "IMD does not list this seat yet. Your host confirms when the worker is paired.");
     }
     if (BigInt(v.claimableOwner || 0) > 0n || BigInt(v.pending || 0) > 0n) owner.push({ id: "claim", label: "Claim my rewards", secondary: true });
     if (BigInt(v.claimableProvider || 0) > 0n || BigInt(v.pending || 0) > 0n) host.push({ id: "claim", label: "Claim my rewards", secondary: true });
@@ -19169,31 +19205,73 @@ function derive(snap, nowSec = Math.floor(Date.now() / 1e3)) {
   }
   const index2 = STEPS.findIndex((x) => x.key === step);
   const statuses = STEPS.map((x, i) => ({ key: x.key, title: x.title, status: i < index2 ? "done" : i === index2 ? "current" : "todo" }));
-  if (v && v.ended && lower(v.seatOwner) !== lower(v.address)) statuses[statuses.length - 1].status = "done";
+  if (v && v.ended && lower2(v.seatOwner) !== lower2(v.address)) statuses[statuses.length - 1].status = "done";
   return { step, index: index2, statuses, owner, host, notes };
+}
+
+// src/guards.js
+init_define_CONFIG();
+var LOCK_TTL_MS = 9e4;
+function emptyRecord() {
+  return { seq: 0, vault: null, artifactText: null, approved: {}, intents: {}, registered: {}, pendingApprovals: {}, log: [] };
+}
+function mergeRecords(mine, theirs) {
+  if (!theirs || typeof theirs !== "object") return mine;
+  const mineSeq = Number(mine.seq) || 0;
+  const theirsSeq = Number(theirs.seq) || 0;
+  const [older, newer] = theirsSeq > mineSeq ? [mine, theirs] : [theirs, mine];
+  const out = { ...emptyRecord(), ...older, ...newer };
+  out.seq = Math.max(mineSeq, theirsSeq);
+  out.approved = { ...older.approved || {}, ...newer.approved || {} };
+  out.intents = { ...older.intents || {}, ...newer.intents || {} };
+  out.registered = { ...older.registered || {}, ...newer.registered || {} };
+  out.pendingApprovals = { ...older.pendingApprovals || {} };
+  for (const [vault2, hashes] of Object.entries(newer.pendingApprovals || {})) {
+    out.pendingApprovals[vault2] = [.../* @__PURE__ */ new Set([...out.pendingApprovals[vault2] || [], ...hashes])];
+  }
+  return out;
+}
+function signingContext({ chainId, account, vault: vault2, action, to, data }) {
+  return { chainId: Number(chainId), account: String(account || "").toLowerCase(), vault: String(vault2 || "").toLowerCase(), action, to: String(to || "").toLowerCase(), data: String(data || "") };
+}
+function contextUnchanged(reviewed, current) {
+  return !!reviewed && !!current && reviewed.chainId === current.chainId && reviewed.account === current.account && reviewed.vault === current.vault && reviewed.action === current.action && reviewed.to === current.to && reviewed.data === current.data;
+}
+function lockIsFree(lockValue, nowMs = Date.now(), ttl = LOCK_TTL_MS) {
+  const t = Number(lockValue);
+  return !Number.isFinite(t) || t <= 0 || nowMs - t > ttl;
 }
 
 // src/app.js
 var CONFIG = define_CONFIG_default;
 var KEY = `seat-page:${CONFIG.chainId}`;
+var LOCK = `${KEY}:lock`;
 var ZERO = "0x0000000000000000000000000000000000000000";
 var $ = (id) => document.getElementById(id);
 var esc = (s2) => String(s2 ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 var short = (a) => a ? `${a.slice(0, 6)}\u2026${a.slice(-4)}` : "";
-var lower2 = (a) => String(a || "").toLowerCase();
-function loadStore() {
+var lower3 = (a) => String(a || "").toLowerCase();
+var store = emptyRecord();
+var storageOk = true;
+function readStorage() {
   try {
-    const s2 = JSON.parse(localStorage.getItem(KEY) || "{}");
-    return { vault: null, artifactText: null, pendingApprovals: {}, log: [], ...s2 };
+    const raw = localStorage.getItem(KEY);
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return { vault: null, artifactText: null, pendingApprovals: {}, log: [] };
+    return null;
   }
 }
-var store = loadStore();
+function reload() {
+  store = mergeRecords(store, readStorage());
+}
 function save() {
+  reload();
+  store.seq = (Number(store.seq) || 0) + 1;
   try {
     localStorage.setItem(KEY, JSON.stringify(store));
+    storageOk = true;
   } catch {
+    storageOk = false;
   }
 }
 function log(text) {
@@ -19201,12 +19279,20 @@ function log(text) {
   if (store.log.length > 200) store.log.splice(0, store.log.length - 200);
   save();
 }
-var pendingFor = (vault2) => store.pendingApprovals[lower2(vault2)] ||= [];
+var perVault = (map, vault2) => map[lower3(vault2)] ||= [];
+window.addEventListener("storage", (e) => {
+  if (e.key === KEY) {
+    reload();
+    render();
+  }
+});
+reload();
 var wallet = { eth: null, address: null, chainId: null, client: null };
 var vault = null;
+var vaultProven = null;
 var imdSeat = null;
+var imdChecked = false;
 var agentReusable = null;
-var artifact = null;
 var busy = false;
 var imdAt = 0;
 async function connect() {
@@ -19226,6 +19312,8 @@ async function connect() {
   });
   eth.on?.("chainChanged", (c) => {
     wallet.chainId = parseInt(c, 16);
+    vault = null;
+    vaultProven = null;
     refresh();
   });
   await refresh();
@@ -19241,10 +19329,27 @@ var onChain = () => wallet.client && wallet.chainId === CONFIG.chainId;
 function role() {
   if (!wallet.address) return "none";
   if (!vault) return "undecided";
-  const a = lower2(wallet.address);
-  if (a === lower2(vault.owner)) return "owner";
-  if (a === lower2(vault.provider)) return "host";
+  const a = lower3(wallet.address);
+  if (a === lower3(vault.owner)) return "owner";
+  if (a === lower3(vault.provider)) return "host";
   return "viewer";
+}
+function liveArtifact() {
+  if (!store.artifactText || !vault) return null;
+  try {
+    const a = decodeOffer(PAIRING_PREFIX, store.artifactText);
+    return checkPairingOfferAgainstVault(a, vault, CONFIG).length === 0 ? a : null;
+  } catch {
+    return null;
+  }
+}
+function keptIntent() {
+  const i = vault ? store.intents[lower3(vault.address)] : null;
+  if (!i || !vault) return null;
+  return validateIntent(i, { registrar: CONFIG.registrar, chain: CONFIG.chainId, collection: CONFIG.collection, token: vault.tokenId }).length === 0 ? i : null;
+}
+function snapshot() {
+  return { vault, artifact: liveArtifact(), approved: vault ? store.approved[lower3(vault.address)] || null : null, intent: keptIntent(), registered: vault ? store.registered[lower3(vault.address)] || null : null, pendingHashes: vault ? perVault(store.pendingApprovals, vault.address) : [], imdSeat, agentReusable };
 }
 async function refresh() {
   if (!onChain()) {
@@ -19253,13 +19358,37 @@ async function refresh() {
   }
   try {
     if (store.vault) {
-      vault = await readVault(wallet.client, store.vault);
-      const list = pendingFor(vault.address);
+      const selected = store.vault;
+      if (vaultProven !== true || lower3(vault?.address) !== lower3(selected)) {
+        vaultProven = await isFactoryVault(wallet.client, CONFIG.factory, selected, { fromBlock: CONFIG.factoryBlock || 0 });
+        if (!vaultProven) {
+          vault = null;
+          render();
+          return;
+        }
+      }
+      const v = await readVault(wallet.client, selected);
+      if (lower3(v.collection) !== lower3(CONFIG.collection)) {
+        vaultProven = false;
+        vault = null;
+        render();
+        return;
+      }
+      if (lower3(vault?.address) !== lower3(v.address)) {
+        imdSeat = null;
+        imdChecked = false;
+        agentReusable = null;
+        imdAt = 0;
+      }
+      vault = v;
+      reload();
+      const list = perVault(store.pendingApprovals, vault.address);
       for (const hash3 of [...list]) {
         try {
           const r = await wallet.client.getTransactionReceipt({ hash: hash3 });
           if (r) {
             list.splice(list.indexOf(hash3), 1);
+            save();
             log(`approval ${short(hash3)} ${r.status === "success" ? "mined" : "reverted"}`);
           }
         } catch {
@@ -19271,46 +19400,75 @@ async function refresh() {
           const r = await fetch(`${CONFIG.imdApi}/swarm`, { signal: AbortSignal.timeout(15e3) });
           const j = await r.json();
           imdSeat = j && j.seats ? j.seats[String(vault.tokenId)] || null : null;
-          agentReusable = imdSeat && imdSeat.agentId ? await vaultControlsAgent(wallet.client, CONFIG.registrar, imdSeat.agentId, vault.address) : null;
+          imdChecked = true;
+          agentReusable = imdSeat && imdSeat.agentId ? await vaultControlsAgent(wallet.client, CONFIG.registrar, imdSeat.agentId, vault.address, CONFIG.collection, vault.tokenId) : null;
         } catch {
+          imdSeat = null;
+          imdChecked = false;
+          agentReusable = null;
         }
       }
-      artifact = null;
-      if (store.artifactText) {
-        try {
-          const a = decodeOffer(PAIRING_PREFIX, store.artifactText);
-          if (checkPairingOfferAgainstVault(a, vault, CONFIG).length === 0) artifact = a;
-        } catch {
-        }
-      }
-    } else vault = null;
+    } else {
+      vault = null;
+      vaultProven = null;
+    }
   } catch (e) {
     toast(`Chain read failed: ${e.shortMessage || e.message}`, true);
   }
   render();
 }
-async function sendTx(built, title, text, { pending = false } = {}) {
+async function sendTx(action, built, title, text, { protect = false, recheck = () => null } = {}) {
   if (busy) return null;
   if (!onChain()) {
     toast(`Connect the wallet on chain ${CONFIG.chainId} first.`, true);
     return null;
   }
+  const reviewed = signingContext({ chainId: wallet.chainId, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
   busy = true;
   render();
   try {
+    if (protect) {
+      try {
+        localStorage.setItem(LOCK + ":probe", "1");
+        localStorage.removeItem(LOCK + ":probe");
+      } catch {
+        storageOk = false;
+      }
+    }
+    if (protect && !storageOk) throw new Error("this browser cannot keep a record of the approval; use a browser where site data is allowed");
     const ok = await confirmDialog(`<h2>${esc(title)}</h2><p>${esc(text)}</p><p class="hint">This is an on-chain transaction; your wallet shows the gas cost.</p><details><summary>Exact transaction</summary><p class="offer">To ${esc(built.to)}<br>Data ${esc(built.data)}</p></details>`);
     if (!ok) return null;
-    const hash3 = await wallet.eth.request({ method: "eth_sendTransaction", params: [{ from: wallet.address, to: built.to, data: built.data, value: "0x0" }] });
+    const chainNow = parseInt(await wallet.eth.request({ method: "eth_chainId" }), 16);
+    const accounts = await wallet.eth.request({ method: "eth_accounts" });
+    wallet.chainId = chainNow;
+    wallet.address = accounts[0] || null;
+    const current = signingContext({ chainId: chainNow, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
+    if (!contextUnchanged(reviewed, current)) throw new Error("the wallet, chain or agreement changed while you were reviewing; nothing was sent");
+    const why = recheck();
+    if (why) throw new Error(why);
+    if (protect) {
+      reload();
+      if (perVault(store.pendingApprovals, vault.address).length) throw new Error("an earlier approval is still unresolved; nothing was sent");
+      if (!lockIsFree(localStorage.getItem(LOCK + ":" + lower3(vault.address)))) throw new Error("another tab is sending an approval for this vault; nothing was sent");
+      localStorage.setItem(LOCK + ":" + lower3(vault.address), String(Date.now()));
+    }
+    let hash3;
+    try {
+      hash3 = await wallet.eth.request({ method: "eth_sendTransaction", params: [{ from: wallet.address, to: built.to, data: built.data, value: "0x0" }] });
+    } finally {
+      if (protect) localStorage.removeItem(LOCK + ":" + lower3(vault.address));
+    }
     log(`${title}: sent ${hash3}`);
-    if (pending && store.vault) {
-      pendingFor(store.vault).push(hash3);
+    if (protect) {
+      perVault(store.pendingApprovals, vault.address).push(hash3);
       save();
       render();
     }
     toast(`${title}: sent, waiting for confirmation`);
     const receipt = await waitReceipt(wallet.client, hash3);
-    if (pending && store.vault) {
-      const l = pendingFor(store.vault);
+    if (protect) {
+      reload();
+      const l = perVault(store.pendingApprovals, vault.address);
       const i = l.indexOf(hash3);
       if (i >= 0) l.splice(i, 1);
       save();
@@ -19365,6 +19523,22 @@ function toast(text, isError = false) {
     t.className = "";
   }, isError ? 9e3 : 4e3);
 }
+async function selectVault(address) {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("not an address");
+  if (!await isFactoryVault(wallet.client, CONFIG.factory, address, { fromBlock: CONFIG.factoryBlock || 0 })) throw new Error("that address was not created by this factory; the page only works with vaults the factory made");
+  const v = await readVault(wallet.client, address);
+  if (lower3(v.collection) !== lower3(CONFIG.collection)) throw new Error("that vault is for another collection");
+  store.vault = address;
+  store.artifactText = null;
+  save();
+  vault = null;
+  vaultProven = null;
+  imdSeat = null;
+  imdChecked = false;
+  agentReusable = null;
+  imdAt = 0;
+  await refresh();
+}
 var actions = {
   create: () => showForm("Create the vault", [["offer", "The host's hosting offer (seathost1:\u2026)", "", true], ["tokenId", "Your seat token id", ""]], async (f) => {
     const offer = decodeOffer(HOSTING_PREFIX, f.offer);
@@ -19372,46 +19546,71 @@ var actions = {
     if (problems.length) throw new Error(problems.join("; "));
     if (!/^\d+$/.test(f.tokenId.trim())) throw new Error("the token id must be a whole number");
     const receipt = await sendTx(
+      "create",
       tx.create(CONFIG.factory, { provider: offer.provider, operator: offer.operator, tokenId: f.tokenId.trim(), providerBps: offer.providerBps, deviceKey: offer.deviceKey }),
       "Create the vault",
       `A vault for seat #${f.tokenId.trim()} with host ${short(offer.provider)}: you keep ${100 - offer.providerBps / 100}%, the host receives ${offer.providerBps / 100}%. No daily fee, no deposit.`
     );
     if (!receipt) return;
-    const created = decodeLogs(receipt).find((e) => e.name === "VaultCreated" && lower2(e.address) === lower2(CONFIG.factory));
+    const created = decodeLogs(receipt).find((e) => e.name === "VaultCreated" && lower3(e.address) === lower3(CONFIG.factory));
     if (!created) throw new Error("no VaultCreated event in the receipt");
-    store.vault = created.args.vault;
-    store.artifactText = null;
-    save();
-    log(`vault ${store.vault} created`);
+    log(`vault ${created.args.vault} created`);
+    await selectVault(created.args.vault);
     toast("Vault created. Send its address to your host.");
-    await refresh();
   }),
-  deposit: () => sendTx(tx.depositSeat(CONFIG.collection, wallet.address, vault.address, vault.tokenId), "Move my NFT into the vault", "Your NFT moves into its vault in one safe transfer. You can take it back at any time."),
-  syncHeld: () => sendTx(tx.syncHeld(vault.address), "Record the NFT as held", "The NFT is already in the vault; this records it so pairing can be approved."),
+  deposit: () => sendTx("deposit", tx.depositSeat(CONFIG.collection, wallet.address, vault.address, vault.tokenId), "Move my NFT into the vault", "Your NFT moves into its vault in one safe transfer. You can take it back at any time."),
+  syncHeld: () => sendTx("syncHeld", tx.syncHeld(vault.address), "Record the NFT as held", "The NFT is already in the vault; this records it so pairing can be approved."),
   "pairing-offer": () => showForm("Paste the host's pairing string", [["offer", "seatpair1:\u2026", "", true]], async (f) => {
     const a = decodeOffer(PAIRING_PREFIX, f.offer);
     const problems = checkPairingOfferAgainstVault(a, vault, CONFIG);
     if (problems.length) throw new Error(problems.join("; "));
     const digest = await workerAuthorizationDigest(wallet.client, vault.address, a.message.deviceKey, a.message.nonce, a.message.expiresAt);
-    if (lower2(digest) !== lower2(a.digest)) throw new Error("the string's digest does not match what this vault computes");
+    if (lower3(digest) !== lower3(a.digest)) throw new Error("the string's digest does not match what this vault computes");
+    reload();
     store.artifactText = f.offer.trim();
+    if (a.intent) store.intents[lower3(vault.address)] = a.intent;
     save();
     log(`pairing string ${a.code} accepted; approve before ${new Date(a.message.expiresAt * 1e3).toISOString()}`);
     await refresh();
   }),
-  approvePairing: () => sendTx(tx.approvePairing(vault.address, artifact.message.nonce, artifact.message.expiresAt, artifact.message.relayOrigin), "Approve the pairing", `Approve exactly this pairing (code ${artifact.code}) for your host's device. It must be mined before ${new Date(artifact.message.expiresAt * 1e3).toLocaleTimeString()}.`, { pending: true }),
-  registerAgent: () => sendTx(tx.registerAgent(vault.address, artifact.intent.data), "Register the agent", "IMD's registration for this seat, sent through the vault. The page checked it names this seat and IMD's registrar."),
-  claim: () => sendTx(tx.claim(vault.address), "Claim my rewards", "Sends your share of the rewards in the vault to your wallet."),
-  withdraw: () => showForm("Take my NFT back", [["to", "Send the NFT to", wallet.address || ""]], (f) => sendTx(tx.withdraw(vault.address, f.to.trim()), "Take my NFT back", "Ends the agreement and returns the NFT in one transaction. Rewards already here stay claimable.")),
-  selectVault: () => showForm("Open an agreement", [["address", "Vault address", store.vault || ""]], async (f) => {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(f.address.trim())) throw new Error("not an address");
-    const v = await readVault(wallet.client, f.address.trim());
-    if (lower2(v.collection) !== lower2(CONFIG.collection)) throw new Error("that vault is for another collection");
-    store.vault = f.address.trim();
-    store.artifactText = null;
-    save();
-    await refresh();
-  })
+  approvePairing: async () => {
+    const a = liveArtifact();
+    if (!a) {
+      toast("The pairing string expired; ask the host for a fresh one.", true);
+      return;
+    }
+    const receipt = await sendTx(
+      "approvePairing",
+      tx.approvePairing(vault.address, a.message.nonce, a.message.expiresAt, a.message.relayOrigin),
+      "Approve the pairing",
+      `Approve exactly this pairing (code ${a.code}) for your host's device. It must be mined before ${new Date(a.message.expiresAt * 1e3).toLocaleTimeString()}.`,
+      { protect: true, recheck: () => expiryProblems(a, Date.now()).length ? "the pairing string expired while you were reviewing; ask the host for a fresh one" : null }
+    );
+    if (receipt && receipt.status === "success") {
+      reload();
+      store.approved[lower3(vault.address)] = { digest: a.digest, code: a.code, at: (/* @__PURE__ */ new Date()).toISOString() };
+      save();
+      log(`pairing ${a.code} approved; your host completes it`);
+    }
+  },
+  registerAgent: async () => {
+    const intent = keptIntent();
+    if (!intent) {
+      toast("No valid registration intent in hand; paste the pairing string again.", true);
+      return;
+    }
+    const receipt = await sendTx("registerAgent", tx.registerAgent(vault.address, intent.data), "Register the agent", "IMD's registration for this seat, sent through the vault. The page checked it names this seat and IMD's registrar.");
+    if (receipt && receipt.status === "success") {
+      const ev = decodeLogs(receipt).find((e) => e.name === "AgentRegistered");
+      reload();
+      store.registered[lower3(vault.address)] = { agentId: ev ? ev.args.agentId : null, txHash: receipt.transactionHash };
+      save();
+      log(`agent ${ev ? ev.args.agentId : "?"} registered; your host binds it on IMD`);
+    }
+  },
+  claim: () => sendTx("claim", tx.claim(vault.address), "Claim my rewards", "Sends your share of the rewards in the vault to your wallet."),
+  withdraw: () => showForm("Take my NFT back", [["to", "Send the NFT to", wallet.address || ""]], (f) => sendTx("withdraw", tx.withdraw(vault.address, f.to.trim()), "Take my NFT back", "Ends the agreement and returns the NFT in one transaction. Rewards already here stay claimable.")),
+  selectVault: () => showForm("Open an agreement", [["address", "Vault address", store.vault || ""]], (f) => selectVault(f.address.trim()))
 };
 function render() {
   const r = role();
@@ -19419,11 +19618,12 @@ function render() {
   $("walletBox").innerHTML = wallet.address ? `<span class="role-tag${["viewer", "undecided", "none"].includes(r) ? " none" : ""}">${esc(r)}</span><span>${esc(short(wallet.address))}</span>${wallet.chainId !== c.chainId ? `<button class="button small" id="switchBtn">switch to chain ${c.chainId}</button>` : ""}` : '<button class="button small" id="connectBtn">Connect wallet</button>';
   $("connectBtn")?.addEventListener("click", connect);
   $("switchBtn")?.addEventListener("click", switchChain);
-  $("vaultBox").innerHTML = vault ? `vault ${c.explorer ? `<a href="${esc(c.explorer)}/address/${esc(vault.address)}" target="_blank" rel="noreferrer">${esc(vault.address)}</a>` : esc(vault.address)} \xB7 seat #${esc(vault.tokenId)} \xB7 host share ${vault.providerBps / 100}% <button class="link" id="changeVault">change</button>` : store.vault ? `vault ${esc(store.vault)} (connect the wallet to read it)` : '<button class="link" id="changeVault">open an existing agreement</button>';
+  $("vaultBox").innerHTML = vault ? `vault ${c.explorer ? `<a href="${esc(c.explorer)}/address/${esc(vault.address)}" target="_blank" rel="noreferrer">${esc(vault.address)}</a>` : esc(vault.address)} \xB7 seat #${esc(vault.tokenId)} \xB7 host share ${vault.providerBps / 100}% <button class="link" id="changeVault">change</button>` : store.vault ? `vault ${esc(store.vault)} ${vaultProven === false ? "(refused: not made by this factory)" : "(connect the wallet to read it)"} <button class="link" id="changeVault">change</button>` : '<button class="link" id="changeVault">open an existing agreement</button>';
   $("changeVault")?.addEventListener("click", actions.selectVault);
   const main = $("main");
   const notes = [];
-  if (lower2(c.factory) === ZERO) notes.push('<div class="note error">This page has no factory address configured yet; nothing can be created until the contracts are deployed.</div>');
+  if (lower3(c.factory) === ZERO) notes.push('<div class="note error">This page has no factory address configured yet; nothing can be created until the contracts are deployed.</div>');
+  if (!storageOk) notes.push(`<div class="note error">This browser refuses to store the page's record; approvals are disabled here because an unresolved one could be forgotten.</div>`);
   if (!wallet.address) {
     main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Your NFT, hosted</h1><p class="lead">Hand your seat to a host who runs the worker. Rewards split by a fixed share, no fee, no deposit, and you can take the NFT back at any time.</p><button class="button primary" id="connectMain">Connect wallet</button><p class="hint">Reads go through your wallet's own connection; nothing is sent anywhere until you approve a transaction.</p>`;
     $("connectMain").onclick = connect;
@@ -19431,24 +19631,25 @@ function render() {
     main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Wrong network</h1><p class="lead">Switch your wallet to chain ${c.chainId}.</p><button class="button primary" id="switchMain">Switch network</button>`;
     $("switchMain").onclick = switchChain;
   } else if (!vault) {
-    main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Start</h1><p class="lead">Ask your host for their hosting offer string, then create the vault for your seat. Or open an agreement that already exists.</p><button class="button primary" data-action="create" ${lower2(c.factory) === ZERO ? "disabled" : ""}>Create the vault</button><div class="actions"><button class="button small" data-action="selectVault">Open an existing agreement</button></div>`;
+    main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Start</h1><p class="lead">Ask your host for their hosting offer string, then create the vault for your seat. Or open an agreement that already exists.</p><button class="button primary" data-action="create" ${lower3(c.factory) === ZERO ? "disabled" : ""}>Create the vault</button><div class="actions"><button class="button small" data-action="selectVault">Open an existing agreement</button></div>`;
   } else {
-    const d = derive({ vault, imdSeat, artifact, pendingHashes: pendingFor(vault.address), agentReusable });
+    const d = derive(snapshot());
     const mine = r === "owner" ? d.owner : r === "host" ? d.host : [];
-    const primary = mine.find((a) => !a.passive && !a.secondary);
-    const waiting = mine.find((a) => a.passive);
-    const secondary = mine.filter((a) => a.secondary);
-    const titles = { create: "Start", deposit: "Move your NFT in", pair: "Approve the pairing", register: "Register the agent", hosted: "Hosted", exit: vault.ended && lower2(vault.seatOwner) !== lower2(vault.address) ? "Agreement ended" : "Take your NFT back" };
-    const seatIn = lower2(vault.seatOwner) === lower2(vault.address);
-    const imdLine = imdSeat ? `IMD lists this seat${imdSeat.agentId ? ` with agent <b>${esc(imdSeat.agentId)}</b>` : " without an agent yet"}${imdSeat.accepted !== void 0 ? `, <b>${esc(imdSeat.accepted)}</b> accepted jobs${imdSeat.working ? ", working now" : ""}` : ""}.` : "IMD does not list this seat yet.";
+    const primary = mine.find((a2) => !a2.passive && !a2.secondary);
+    const waiting = mine.find((a2) => a2.passive);
+    const secondary = mine.filter((a2) => a2.secondary);
+    const titles = { create: "Start", deposit: "Move your NFT in", pair: "Approve the pairing", register: "Register the agent", done: "Your side is done", exit: vault.ended && lower3(vault.seatOwner) !== lower3(vault.address) ? "Agreement ended" : "Take your NFT back" };
+    const seatIn = lower3(vault.seatOwner) === lower3(vault.address);
+    const a = liveArtifact();
     main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>${esc(titles[d.step])}</h1>
-      <span class="status${d.step === "hosted" ? "" : " warn"}">${esc(d.step === "hosted" ? "HOSTED" : d.step.toUpperCase())}</span>
+      <span class="status${d.step === "done" ? "" : " warn"}">${esc(d.step === "done" ? "SET UP \xB7 HOST CONFIRMS" : d.step.toUpperCase())}</span>
       <div class="split"><span>NFT <b>#${esc(vault.tokenId)}</b></span><span>Owner keeps <b>${100 - vault.providerBps / 100}%</b></span><span>Host receives <b>${vault.providerBps / 100}%</b></span><span>No daily fee</span></div>
       ${primary ? `<button class="button primary" data-action="${esc(primary.id)}" ${busy ? "disabled" : ""}>${esc(primary.label)}</button>${primary.hint ? `<p class="hint">${esc(primary.hint)}</p>` : ""}` : waiting ? `<div class="wait">${esc(waiting.label)}</div>` : r === "viewer" ? `<div class="wait">Connect the owner's or the host's wallet to act.</div>` : '<div class="wait">Nothing to do right now.</div>'}
-      ${artifact && d.step === "pair" ? `<p class="hint">Pairing code ${esc(artifact.code)} \xB7 approve before ${esc(new Date(artifact.message.expiresAt * 1e3).toLocaleTimeString())}</p>` : ""}
-      <p class="imd">${imdLine}</p>
-      ${secondary.length ? `<div class="actions">${secondary.map((a) => `<button class="button small" data-action="${esc(a.id)}" ${busy ? "disabled" : ""}>${esc(a.label)}</button>`).join("")}</div>` : ""}`;
+      ${a && d.step === "pair" ? `<p class="hint">Pairing code ${esc(a.code)} \xB7 approve before ${esc(new Date(a.message.expiresAt * 1e3).toLocaleTimeString())}</p>` : ""}
+      ${secondary.length ? `<div class="actions">${secondary.map((x) => `<button class="button small" data-action="${esc(x.id)}" ${busy ? "disabled" : ""}>${esc(x.label)}</button>`).join("")}</div>` : ""}`;
     for (const n of d.notes) notes.push(`<div class="note">${esc(n)}</div>`);
+    if (!imdChecked) notes.push(`<div class="note">IMD's listing could not be read yet; its status is unknown, not empty.</div>`);
+    const s2 = snapshot();
     $("details").innerHTML = `<dl>${[
       ["NFT holder", esc(vault.seatOwner), seatIn ? "ok" : ""],
       ["recorded as held", vault.held ? "yes" : "no", vault.held ? "ok" : ""],
@@ -19457,14 +19658,18 @@ function render() {
       ["host", esc(vault.provider)],
       ["operator", esc(vault.operator)],
       ["device key", esc(vault.deviceKey)],
-      ["approved pairing", vault.approvedUntil > Date.now() / 1e3 ? `${esc(vault.approvedDigest)} until ${esc(new Date(vault.approvedUntil * 1e3).toISOString())}` : "none live"],
-      ["unresolved approvals", pendingFor(vault.address).length ? esc(pendingFor(vault.address).join(", ")) : "none"],
+      ["live approval on the vault", vault.approvedUntil > Date.now() / 1e3 ? `${esc(vault.approvedDigest)} until ${esc(new Date(vault.approvedUntil * 1e3).toISOString())}` : "none"],
+      ["your mined approval", s2.approved ? `code ${esc(s2.approved.code)} at ${esc(s2.approved.at)}` : "\u2014"],
+      ["unresolved approvals", s2.pendingHashes.length ? esc(s2.pendingHashes.join(", ")) : "none"],
+      ["registration kept", s2.intent ? "yes" : "\u2014"],
+      ["your registration", s2.registered ? `agent ${esc(s2.registered.agentId)} in ${esc(short(s2.registered.txHash))}` : "\u2014"],
+      ["existing agent reusable", s2.agentReusable === true ? "yes" : s2.agentReusable === false ? "no" : "unknown"],
       ["rewards in the vault", `${esc(formatUnits2(vault.rewardBalance, c.rewardDecimals))} ${esc(c.rewardSymbol)} (unsettled ${esc(formatUnits2(vault.pending, c.rewardDecimals))})`],
       ["owner claimable", `${esc(formatUnits2(vault.claimableOwner, c.rewardDecimals))} ${esc(c.rewardSymbol)}`],
       ["host claimable", `${esc(formatUnits2(vault.claimableProvider, c.rewardDecimals))} ${esc(c.rewardSymbol)}`],
       ["pairing string", store.artifactText ? `<span class="offer">${esc(store.artifactText)}</span>` : "\u2014"]
     ].map(([k, v, cls]) => `<dt>${esc(k)}</dt><dd class="${cls || ""}">${v}</dd>`).join("")}</dl>
-      <h2>Steps</h2><p class="hint">${d.statuses.map((s2) => `${s2.status === "done" ? "\u2713" : s2.status === "current" ? "\u25CF" : "\u25CB"} ${esc(s2.title)}`).join(" \xB7 ")}</p>
+      <h2>Steps</h2><p class="hint">${d.statuses.map((x) => `${x.status === "done" ? "\u2713" : x.status === "current" ? "\u25CF" : "\u25CB"} ${esc(x.title)}`).join(" \xB7 ")}</p>
       <h2>History (this browser)</h2><ol class="log">${store.log.slice().reverse().map((l) => `<li><time>${esc(l.at.replace("T", " ").slice(0, 19))}</time>${esc(l.text)}</li>`).join("")}</ol>`;
   }
   $("notes").innerHTML = notes.join("");
@@ -19474,7 +19679,10 @@ function render() {
 }
 $("resetBtn").onclick = () => {
   if (confirm("Forget the vault, pasted strings and history kept in this browser? Nothing on chain changes.")) {
-    localStorage.removeItem(KEY);
+    try {
+      localStorage.removeItem(KEY);
+    } catch {
+    }
     location.reload();
   }
 };

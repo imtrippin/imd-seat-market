@@ -8,6 +8,18 @@ import { parseConfig } from '../host/lib/config.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const config = parseConfig(JSON.parse(readFileSync(join(here, 'config.json'), 'utf8')), { needRpc: false });
 const check = process.argv.includes('--check');
+/// `../host/lib` imports viem; Node resolution would take host/node_modules first when it is installed. The page's
+/// own pinned copy wins whatever else is installed, so the committed bundle is reproducible from either layout.
+const pinViem = {
+  name: 'pin-viem',
+  setup(b) {
+    b.onResolve({ filter: /^viem(\/|$)/ }, async (args) => {
+      if (args.pluginData === 'pinned') return null;
+      const r = await b.resolve(args.path, { kind: args.kind, resolveDir: here, pluginData: 'pinned' });
+      return r.errors.length ? { errors: r.errors } : { path: r.path };
+    });
+  },
+};
 const outdir = join(here, check ? '.check' : 'dist');
 mkdirSync(outdir, { recursive: true });
 await build({
@@ -16,7 +28,8 @@ await build({
   format: 'esm',
   target: ['es2022'],
   platform: 'browser',
-  nodePaths: [join(here, 'node_modules')], // bare imports in ../host/lib resolve against the page's own pinned packages
+  absWorkingDir: here,
+  plugins: [pinViem],
   minify: false,
   sourcemap: false,
   legalComments: 'none',

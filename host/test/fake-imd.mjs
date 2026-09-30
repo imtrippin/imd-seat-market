@@ -7,7 +7,7 @@ import { hashTypedData, encodeFunctionData, parseAbi } from 'viem';
 import { SeatVaultAbi, ERC1271_MAGIC } from '../lib/chain.js';
 import { WORKER_AUTHORIZATION_TYPES } from '../lib/pairing.js';
 
-const registrarAbi = parseAbi(['function bindings(uint256) view returns (address tokenContract, uint256 tokenId)']);
+const registrarAbi = parseAbi(['function bindingOf(uint256) view returns (uint8 standard, address tokenContract, uint256 tokenId)', 'error UnknownAgent(uint256 agentId)']);
 
 export async function startFakeImd({ client, chainId, collection, registrar, relayOrigin }) {
   const state = { pairings: new Map(), seats: new Map(), calls: [] };
@@ -59,8 +59,9 @@ export async function startFakeImd({ client, chainId, collection, registrar, rel
       if (req.method === 'POST' && url.pathname === '/agents/bind') {
         if (!/^\d+$/.test(String(body.tokenId || ''))) return json(res, 400, { error: 'tokenId required' });
         if (!body.agentId) return json(res, 200, { pending: true });
-        const [tokenContract, tokenId] = await client.readContract({ address: registrar, abi: registrarAbi, functionName: 'bindings', args: [BigInt(body.agentId)] });
-        if (tokenContract.toLowerCase() !== collection.toLowerCase() || tokenId.toString() !== String(body.tokenId)) return json(res, 409, { error: 'agent is not bound to that seat on chain' });
+        let binding;
+        try { binding = await client.readContract({ address: registrar, abi: registrarAbi, functionName: 'bindingOf', args: [BigInt(body.agentId)] }); } catch { return json(res, 409, { error: 'unknown agent' }); }
+        if (binding[1].toLowerCase() !== collection.toLowerCase() || binding[2].toString() !== String(body.tokenId)) return json(res, 409, { error: 'agent is not bound to that seat on chain' });
         const seat = state.seats.get(String(body.tokenId)) || {};
         state.seats.set(String(body.tokenId), { ...seat, agentId: String(body.agentId) });
         return json(res, 200, { ok: true, tokenId: String(body.tokenId), agentId: String(body.agentId) });

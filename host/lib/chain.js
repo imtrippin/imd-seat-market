@@ -1,6 +1,6 @@
 // Chain access shared by the host helper and the agreement page (browser-safe): reads, calldata for a wallet to
-// sign, receipt decoding. Nothing here holds a key.
-import { createPublicClient, http, custom, encodeFunctionData, decodeEventLog, parseAbi, parseAbiItem, getAddress } from 'viem';
+// sign, receipt decoding, factory provenance, agent binding checks. Nothing here holds a key.
+import { createPublicClient, http, custom, encodeFunctionData, decodeEventLog, parseAbi, parseAbiItem, getAddress, ContractFunctionRevertedError } from 'viem';
 import SeatVaultAbi from '../abi/SeatVault.json' with { type: 'json' };
 import FactoryAbi from '../abi/SeatVaultFactory.json' with { type: 'json' };
 
@@ -10,9 +10,15 @@ export const erc721Abi = parseAbi([
   'function safeTransferFrom(address from, address to, uint256 tokenId)',
 ]);
 export const erc20Abi = parseAbi(['function balanceOf(address account) view returns (uint256)']);
-/// Both IMD's registrar (Adapter8004) and the test mock answer this: whoever owns the bound seat controls the agent.
-export const registrarAbi = parseAbi(['function isController(uint256 agentId, address account) view returns (bool)']);
+/// IMD's registrar (Adapter8004, verified source): the immutable binding of an agent (a static tuple, decoded as three
+/// words), a revert for an unknown agent, and control that follows the bound token's current owner.
+export const registrarAbi = parseAbi([
+  'function isController(uint256 agentId, address account) view returns (bool)',
+  'function bindingOf(uint256 agentId) view returns (uint8 standard, address tokenContract, uint256 tokenId)',
+  'error UnknownAgent(uint256 agentId)',
+]);
 export const AGENT_REGISTERED = parseAbiItem('event AgentRegistered(uint256 indexed agentId, bytes data)');
+export const VAULT_CREATED = parseAbiItem('event VaultCreated(address indexed vault, address indexed owner, address indexed provider, uint256 tokenId, uint16 providerBps)');
 export const ERC1271_MAGIC = '0x1626ba7e';
 
 export function httpClient(rpcUrl) {
@@ -25,6 +31,7 @@ export function providerClient(provider) {
 }
 
 const s = (v) => (typeof v === 'bigint' ? v.toString() : v);
+const lower = (a) => String(a || '').toLowerCase();
 
 /// Everything shown about one vault, in one round of reads (all values JSON-safe).
 export async function readVault(client, vault) {
@@ -52,9 +59,44 @@ export async function readFactory(client, factory) {
   return { collection, rewardToken, registrar, relayOrigin, count: Number(count) };
 }
 
-/// Does the vault control this agent on the registrar (the agent is bound to the seat the vault holds)?
-export async function vaultControlsAgent(client, registrar, agentId, vault) {
-  try { return await client.readContract({ address: registrar, abi: registrarAbi, functionName: 'isController', args: [BigInt(agentId), vault] }); } catch { return false; }
+/// Provenance: was this address created by the pinned factory? The factory keeps its vaults in an array; the newest
+/// entries are scanned first (agreements are few). Beyond `maxScan` entries the factory's VaultCreated logs are
+/// used instead, from `fromBlock` (the factory's deployment block) on. Self-reported getters are never enough.
+export async function isFactoryVault(client, factory, vault, { maxScan = 400, fromBlock = 0n } = {}) {
+  const count = Number(await client.readContract({ address: factory, abi: FactoryAbi, functionName: 'count' }));
+  if (count <= maxScan) {
+    for (let i = count - 1; i >= 0; i--) {
+      const a = await client.readContract({ address: factory, abi: FactoryAbi, functionName: 'vaults', args: [BigInt(i)] });
+      if (lower(a) === lower(vault)) return true;
+    }
+    return false;
+  }
+  const logs = await client.getLogs({ address: factory, event: VAULT_CREATED, args: { vault: getAddress(vault) }, fromBlock: BigInt(fromBlock), toBlock: 'latest' });
+  return logs.length > 0;
+}
+
+/// The exact binding of an agent on the registrar plus whether `account` controls it. `known: false` is the
+/// registrar's own answer (no such agent); `null` means the registrar could not be read, which is never treated as
+/// an absence (that would pay for a second registration).
+export async function agentBinding(client, registrar, agentId, account) {
+  let b;
+  try {
+    b = await client.readContract({ address: registrar, abi: registrarAbi, functionName: 'bindingOf', args: [BigInt(agentId)] });
+  } catch (e) {
+    const reverted = typeof e.walk === 'function' ? e.walk((x) => x instanceof ContractFunctionRevertedError) : null;
+    if (reverted && reverted.data && reverted.data.errorName === 'UnknownAgent') return { known: false, tokenContract: null, tokenId: null, controller: false };
+    return null;
+  }
+  let controller = false;
+  try { controller = await client.readContract({ address: registrar, abi: registrarAbi, functionName: 'isController', args: [BigInt(agentId), account] }); } catch { return null; }
+  return { known: true, tokenContract: b[1], tokenId: s(b[2]), controller };
+}
+
+/// true / false / null (unreadable): does this vault control an agent bound to exactly its seat?
+export async function vaultControlsAgent(client, registrar, agentId, vault, collection, tokenId) {
+  const b = await agentBinding(client, registrar, agentId, vault);
+  if (!b) return null;
+  return b.controller && lower(b.tokenContract) === lower(collection) && String(b.tokenId) === String(tokenId);
 }
 
 // ---------------------------------------------------------------- calldata for the wallet

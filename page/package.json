@@ -6,10 +6,12 @@
   "description": "The agreement page: one static HTML file for the NFT owner and the host, built from the host helper's library with a pinned bundler. No backend.",
   "scripts": {
     "build": "node build.mjs",
-    "check": "node build.mjs --check"
+    "check": "node build.mjs --check",
+    "test": "node --test test/"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "playwright": "1.62.1"
   },
   "dependencies": {
     "viem": "2.57.1"

@@ -9,7 +9,7 @@
     "pair": "node helper.mjs pair",
     "resume": "node helper.mjs resume",
     "status": "node helper.mjs status",
-    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/e2e-anvil.test.mjs",
+    "test": "node --test --test-force-exit test/pairing.test.mjs test/steps.test.mjs test/attempt.test.mjs test/e2e-anvil.test.mjs",
     "abi": "node scripts/sync-abi.mjs"
   },
   "dependencies": {

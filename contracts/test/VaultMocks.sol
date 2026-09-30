@@ -44,6 +44,7 @@ contract MockRegistrar {
 
     error NotController(address account);
     error ReservedMetadataKey();
+    error UnknownAgent(uint256 agentId);
     error Refused();
     error DownstreamRefused();
 
@@ -75,6 +76,13 @@ contract MockRegistrar {
     function isController(uint256 agentId, address account) external view returns (bool) {
         Binding memory b = bindings[agentId];
         return b.tokenContract != address(0) && IERC721(b.tokenContract).ownerOf(b.tokenId) == account;
+    }
+
+    /// @dev As on mainnet: the immutable binding (standard, collection, token), or a revert for an unknown agent.
+    function bindingOf(uint256 agentId) external view returns (uint8 standard, address tokenContract, uint256 tokenId) {
+        Binding memory b = bindings[agentId];
+        if (b.tokenContract == address(0)) revert UnknownAgent(agentId);
+        return (0, b.tokenContract, b.tokenId);
     }
 
     /// @dev The registrar itself holds the agent NFT in the ERC-8004 registry.

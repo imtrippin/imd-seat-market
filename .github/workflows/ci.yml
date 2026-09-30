@@ -84,6 +84,12 @@ jobs:
       - name: Install
         working-directory: page
         run: npm ci --no-audit --no-fund
+      - name: Browser for the page tests
+        working-directory: page
+        run: npx playwright install --with-deps chromium
+      - name: Guards and the bundle in a browser
+        working-directory: page
+        run: npm test
       - name: The committed bundle matches the sources and the config
         working-directory: page
         run: npm run check

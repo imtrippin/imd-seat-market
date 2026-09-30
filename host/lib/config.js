@@ -25,6 +25,7 @@ export function normalizeConfig(c) {
     rewardToken: c.rewardToken,
     registrar: c.registrar,
     relayOrigin: c.relayOrigin,
+    factoryBlock: Number.isInteger(c.factoryBlock) && c.factoryBlock >= 0 ? c.factoryBlock : 0,
     explorer: c.explorer ? String(c.explorer).replace(/\/$/, '') : null,
     rewardSymbol: c.rewardSymbol || 'IMD',
     rewardDecimals: Number.isInteger(c.rewardDecimals) ? c.rewardDecimals : 18,

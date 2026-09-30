@@ -8,7 +8,7 @@ npm install
 copy config.example.json config.json     # fill in the factory address for your chain
 ```
 
-`config.json`: `chainId`, `rpcUrl` (a public RPC), `imdApi`, `factory`, `collection`, `rewardToken`, `registrar`, `relayOrigin`. The example pins IMD's mainnet collection, token and registrar.
+`config.json`: `chainId`, `rpcUrl` (a public RPC), `imdApi`, `factory`, `factoryBlock` (the block the factory was deployed in; the provenance check reads the factory's `VaultCreated` logs from there once the factory has more vaults than it scans directly), `collection`, `rewardToken`, `registrar`, `relayOrigin`. The example pins IMD's mainnet collection, token and registrar.
 
 ## The host's three commands
 
@@ -20,23 +20,23 @@ Prints the **hosting offer** (`seathost1:…`): your payout address, the operato
 ```
 OPERATOR_KEY=0x… node helper.mjs pair <vault>
 ```
-One attempt, run to the end: checks the vault is one of the factory's with your operator, finds whether an agent already exists for the seat (reused when the registrar says the vault controls it), otherwise fetches IMD's registration intent and checks it names this seat, asks IMD for a pairing code, prints the **pairing string** (`seatpair1:…`) for the owner, waits for the owner's exact approval on chain, signs with the operator key, checks the vault accepts the signature, completes the pairing with IMD, then binds the agent (the reused one, or the one the owner registers, watched from the block the attempt started) and waits until IMD's standing shows your device. The owner has about five minutes from the print to approve.
+One attempt, run to the end: proves the vault was created by the factory (its list of vaults, or its `VaultCreated` logs), pinned to the agreed collection, registrar, reward token and relay, naming your operator and holding the seat; finds whether an agent already exists for the seat (reused only when IMD names one and the registrar answers that this vault controls an agent bound to exactly this seat; a registrar that cannot be read stops the attempt instead of paying for a second registration), otherwise fetches IMD's registration intent and checks it names this seat, asks IMD for a pairing code, prints the **pairing string** (`seatpair1:…`) for the owner, waits for the owner's exact approval on chain, signs with the operator key, checks the vault accepts the signature, completes the pairing with IMD, then binds the agent (the reused one, or the one the owner registers, watched from the block the attempt started) and waits until IMD's standing shows your device. The owner has about five minutes from the print to approve.
 
 ```
 OPERATOR_KEY=0x… node helper.mjs resume <vault>
 node helper.mjs status <vault>
 ```
-`resume` continues the recorded attempt after a restart or a pending bind; it never asks for a second code while one is live. `status` prints the vault and IMD's view.
+`resume` continues the recorded attempt after a restart or a pending bind. It proves the vault again first. A completion whose answer was lost is reconciled with IMD before anything is sent again: the code's status (consumed and enrolled for this vault and seat means done; consumed for anything else ends the attempt), or the seat's standing when IMD no longer knows the code (an enrolment of this device means done; otherwise the attempt ends only once its window has closed). It never asks for a second code while an attempt is unresolved, however old. `status` prints the vault and IMD's view.
 
 The record of the current attempt lives in `data/<vault>.json` (ignored by git): phase, the pairing string, the block the attempt started at. No key is ever written there.
 
 ## Safety
 
-Everything the helper accepts is checked: the vault against the factory, collection, registrar, reward token, relay and operator; IMD's pairing response against the agreed relay, chain and collection; the registration intent against the pinned registrar and this seat. The operator key signs exactly one thing, the WorkerAuthorization digest the owner approved on the vault, and only after the vault has answered that it accepts the signature. Stopping the helper stops future steps; it cannot recall a completion already posted or an approval already sent.
+Everything the helper accepts is checked: the vault against the factory, collection, registrar, reward token, relay and operator; IMD's pairing response against the agreed relay, chain and collection; the registration intent against the pinned registrar and this seat. The operator key signs exactly one thing, the WorkerAuthorization digest the owner approved on the vault, and only after the vault has answered that it accepts the signature. The completion is posted at most once per attempt. Stopping the helper stops future steps (the pairing start, the completion and the bind each check for a cancellation first); it cannot recall a completion already posted or an approval already sent.
 
 ## Tests
 
-`npm test` runs the unit tests (pairing payloads, offer strings, the step machine) and an offline end-to-end run: a local anvil chain with the real vault and factory bytecode, a fake IMD that verifies pairings through the vault's `isValidSignature`, the owner's transactions built exactly as the page builds them, the helper restarted in the middle of an attempt, rewards claimed by both parties, exit, a claim after exit, and a second agreement that reuses an existing agent. It skips when anvil or the Foundry artifacts (`forge build` in `contracts/`) are missing.
+`npm test` runs the unit tests (pairing payloads, offer strings, the step machine, the helper's recovery rules for an unresolved completion) and an offline end-to-end run: a local anvil chain with the real vault and factory bytecode, a fake IMD that verifies pairings through the vault's `isValidSignature`, the owner's transactions built exactly as the page builds them, the helper restarted in the middle of an attempt, rewards claimed by both parties, exit, a claim after exit, a second agreement that reuses an existing agent with the completion's answer lost once and reconciled, and a vault deployed by hand (answering every getter like a real one) refused. It skips when anvil or the Foundry artifacts (`forge build` in `contracts/`) are missing.
 
 ## What it does not prove
 
