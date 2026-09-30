@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { encodeFunctionResult, decodeFunctionData, keccak256, toHex, stringToHex } from 'viem';
+import { encodeFunctionResult, decodeFunctionData, encodeEventTopics, encodeAbiParameters, keccak256, toHex, stringToHex } from 'viem';
 import { SeatVaultAbi, FactoryAbi, erc721Abi, erc20Abi, registrarAbi } from '../../host/lib/chain.js';
 import { encodeOffer, PAIRING_PREFIX } from '../../host/lib/pairing.js';
 
@@ -113,17 +113,38 @@ export function simulatedChain(over = {}) {
     try { const r = await rpc(q); chain.calls.push({ method: q.method, ok: true }); return r; }
     catch (e) { chain.calls.push({ method: q.method, error: e.message }); throw e; }
   };
-  /// mine a sent transaction: an approval records the digest on the simulated vault
-  chain.mine = (hash, logs = []) => {
+  /// mine a sent transaction: a successful approval records the digest on the simulated vault; `status: '0x0'`
+  /// mines it reverted; `logs` are raw log objects (see agentRegisteredLog)
+  chain.mine = (hash, logs = [], { status = '0x1' } = {}) => {
     const tx = chain.sent.find((x) => x.hash === hash);
-    if (String(tx.data).startsWith('0x') && String(tx.to).toLowerCase() === VAULT.toLowerCase()) {
+    if (status === '0x1' && String(tx.data).startsWith('0x') && String(tx.to).toLowerCase() === VAULT.toLowerCase()) {
       const d = decodeFunctionData({ abi: SeatVaultAbi, data: tx.data });
       if (d.functionName === 'approvePairing') { chain.approvedDigest = chain.digest; chain.approvedUntil = Number(d.args[1]); }
     }
     chain.block += 1;
-    chain.receipts[hash] = { transactionHash: hash, blockNumber: toHex(chain.block), blockHash: H('b'), status: '0x1', logs, from: tx.from, to: tx.to, transactionIndex: '0x0', cumulativeGasUsed: '0x1', gasUsed: '0x1', effectiveGasPrice: '0x1', type: '0x2', logsBloom: '0x' + '0'.repeat(512), contractAddress: null };
+    const blockNumber = toHex(chain.block);
+    const full = logs.map((l, i) => ({ address: VAULT, blockNumber, blockHash: H('b'), transactionHash: hash, transactionIndex: '0x0', logIndex: toHex(i), removed: false, ...l }));
+    chain.receipts[hash] = { transactionHash: hash, blockNumber, blockHash: H('b'), status, logs: full, from: tx.from, to: tx.to, transactionIndex: '0x0', cumulativeGasUsed: '0x1', gasUsed: '0x1', effectiveGasPrice: '0x1', type: '0x2', logsBloom: '0x' + '0'.repeat(512), contractAddress: null };
   };
   return chain;
+}
+
+/// The vault's AgentRegistered(uint256 indexed agentId, bytes data) log, as the chain would emit it.
+export function agentRegisteredLog(agentId, data = '0x1234') {
+  return { topics: encodeEventTopics({ abi: SeatVaultAbi, eventName: 'AgentRegistered', args: { agentId: BigInt(agentId) } }), data: encodeAbiParameters([{ type: 'bytes' }], [data]) };
+}
+
+/// Holds the first wallet send until `release()` is called (a wallet prompt left open); later sends pass through.
+export function gateFirstSend(chain) {
+  const original = chain.rpc;
+  let sends = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  chain.rpc = async (q) => {
+    if (q.method === 'eth_sendTransaction') { sends += 1; if (sends === 1) await gate; }
+    return original(q);
+  };
+  return { release, sends: () => sends };
 }
 
 export function pairingString(chain, { codeSeconds = 240 } = {}) {
@@ -136,7 +157,7 @@ export function pairingString(chain, { codeSeconds = 240 } = {}) {
   return { text: encodeOffer(PAIRING_PREFIX, artifact), artifact };
 }
 
-export const baseRecord = (vault) => ({ seq: 1, vault, artifactText: null, approved: {}, intents: {}, registered: {}, pendingApprovals: {}, log: [] });
+export const baseRecord = (vault) => ({ seq: 1, vault, artifactText: null, approved: {}, intents: {}, registered: {}, pending: {}, resolved: {}, log: [] });
 
 /// A browser context whose window.ethereum forwards to the simulated chain; every non-loopback request is aborted.
 export async function openContext(browser, base, chain, { swarm = { seats: {} }, record = null, denyStorage = false } = {}) {

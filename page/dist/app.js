@@ -19211,46 +19211,66 @@ function derive(snap, nowSec = Math.floor(Date.now() / 1e3)) {
 
 // src/guards.js
 init_define_CONFIG();
-var LOCK_TTL_MS = 9e4;
+var lower3 = (v) => String(v || "").toLowerCase();
 function emptyRecord() {
-  return { seq: 0, vault: null, artifactText: null, approved: {}, intents: {}, registered: {}, pendingApprovals: {}, log: [] };
+  return { seq: 0, vault: null, artifactText: null, approved: {}, intents: {}, registered: {}, pending: {}, resolved: {}, log: [] };
 }
 function mergeRecords(mine, theirs) {
-  if (!theirs || typeof theirs !== "object") return mine;
-  const mineSeq = Number(mine.seq) || 0;
-  const theirsSeq = Number(theirs.seq) || 0;
-  const [older, newer] = theirsSeq > mineSeq ? [mine, theirs] : [theirs, mine];
+  const a = mine && typeof mine === "object" ? mine : emptyRecord();
+  const b = theirs && typeof theirs === "object" ? theirs : emptyRecord();
+  const aSeq = Number(a.seq) || 0;
+  const bSeq = Number(b.seq) || 0;
+  const [older, newer] = bSeq > aSeq ? [a, b] : [b, a];
   const out = { ...emptyRecord(), ...older, ...newer };
-  out.seq = Math.max(mineSeq, theirsSeq);
+  out.seq = Math.max(aSeq, bSeq);
   out.approved = { ...older.approved || {}, ...newer.approved || {} };
   out.intents = { ...older.intents || {}, ...newer.intents || {} };
   out.registered = { ...older.registered || {}, ...newer.registered || {} };
-  out.pendingApprovals = { ...older.pendingApprovals || {} };
-  for (const [vault2, hashes] of Object.entries(newer.pendingApprovals || {})) {
-    out.pendingApprovals[vault2] = [.../* @__PURE__ */ new Set([...out.pendingApprovals[vault2] || [], ...hashes])];
-  }
+  out.resolved = {};
+  for (const src of [older, newer]) for (const [h, r] of Object.entries(src.resolved || {})) out.resolved[lower3(h)] = r;
+  out.pending = {};
+  for (const src of [older, newer]) for (const [h, op] of Object.entries(src.pending || {})) if (!out.resolved[lower3(h)]) out.pending[lower3(h)] = op;
+  delete out.pendingApprovals;
   return out;
 }
+function pendingFor(pending, vault2) {
+  const v = vault2 ? lower3(vault2) : null;
+  return Object.entries(pending || {}).filter(([, op]) => !v || lower3(op && op.vault) === v);
+}
+function settleReceipt(record, hash3, receipt, sent, extra = {}) {
+  const h = lower3(hash3);
+  const pending = record.pending || {};
+  const op = pending[h] || pending[hash3];
+  if (!op) return { record, status: null, op: null };
+  const at = extra.at || (/* @__PURE__ */ new Date()).toISOString();
+  let status;
+  if (lower3(receipt.transactionHash) !== h) status = "mismatch";
+  else if (receipt.to && lower3(receipt.to) !== lower3(op.to)) status = "mismatch";
+  else if (sent && (lower3(sent.to) !== lower3(op.to) || lower3(sent.input) !== lower3(op.data))) status = "mismatch";
+  else status = receipt.status === "success" ? "success" : "reverted";
+  const next = { ...record, pending: { ...pending }, resolved: { ...record.resolved || {} }, approved: { ...record.approved || {} }, registered: { ...record.registered || {} } };
+  delete next.pending[h];
+  delete next.pending[hash3];
+  next.resolved[h] = { status, block: receipt.blockNumber !== void 0 && receipt.blockNumber !== null ? Number(receipt.blockNumber) : null, at, vault: lower3(op.vault), action: op.action };
+  if (status === "success" && op.action === "approvePairing") next.approved[lower3(op.vault)] = { digest: op.digest, code: op.code, at, txHash: h };
+  if (status === "success" && op.action === "registerAgent") next.registered[lower3(op.vault)] = { agentId: extra.agentId === void 0 ? null : extra.agentId, txHash: h };
+  return { record: next, status, op };
+}
 function signingContext({ chainId, account, vault: vault2, action, to, data }) {
-  return { chainId: Number(chainId), account: String(account || "").toLowerCase(), vault: String(vault2 || "").toLowerCase(), action, to: String(to || "").toLowerCase(), data: String(data || "") };
+  return { chainId: Number(chainId), account: lower3(account), vault: lower3(vault2), action, to: lower3(to), data: String(data || "") };
 }
 function contextUnchanged(reviewed, current) {
   return !!reviewed && !!current && reviewed.chainId === current.chainId && reviewed.account === current.account && reviewed.vault === current.vault && reviewed.action === current.action && reviewed.to === current.to && reviewed.data === current.data;
-}
-function lockIsFree(lockValue, nowMs = Date.now(), ttl = LOCK_TTL_MS) {
-  const t = Number(lockValue);
-  return !Number.isFinite(t) || t <= 0 || nowMs - t > ttl;
 }
 
 // src/app.js
 var CONFIG = define_CONFIG_default;
 var KEY = `seat-page:${CONFIG.chainId}`;
-var LOCK = `${KEY}:lock`;
 var ZERO = "0x0000000000000000000000000000000000000000";
 var $ = (id) => document.getElementById(id);
 var esc = (s2) => String(s2 ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 var short = (a) => a ? `${a.slice(0, 6)}\u2026${a.slice(-4)}` : "";
-var lower3 = (a) => String(a || "").toLowerCase();
+var lower4 = (a) => String(a || "").toLowerCase();
 var store = emptyRecord();
 var storageOk = true;
 function readStorage() {
@@ -19279,7 +19299,6 @@ function log(text) {
   if (store.log.length > 200) store.log.splice(0, store.log.length - 200);
   save();
 }
-var perVault = (map, vault2) => map[lower3(vault2)] ||= [];
 window.addEventListener("storage", (e) => {
   if (e.key === KEY) {
     reload();
@@ -19329,10 +19348,19 @@ var onChain = () => wallet.client && wallet.chainId === CONFIG.chainId;
 function role() {
   if (!wallet.address) return "none";
   if (!vault) return "undecided";
-  const a = lower3(wallet.address);
-  if (a === lower3(vault.owner)) return "owner";
-  if (a === lower3(vault.provider)) return "host";
+  const a = lower4(wallet.address);
+  if (a === lower4(vault.owner)) return "owner";
+  if (a === lower4(vault.provider)) return "host";
   return "viewer";
+}
+function storedArtifact() {
+  if (!store.artifactText || !vault) return null;
+  try {
+    const a = decodeOffer(PAIRING_PREFIX, store.artifactText);
+    return validateArtifact(a).length === 0 && lower4(a.vault) === lower4(vault.address) ? a : null;
+  } catch {
+    return null;
+  }
 }
 function liveArtifact() {
   if (!store.artifactText || !vault) return null;
@@ -19344,12 +19372,35 @@ function liveArtifact() {
   }
 }
 function keptIntent() {
-  const i = vault ? store.intents[lower3(vault.address)] : null;
+  const i = vault ? store.intents[lower4(vault.address)] : null;
   if (!i || !vault) return null;
   return validateIntent(i, { registrar: CONFIG.registrar, chain: CONFIG.chainId, collection: CONFIG.collection, token: vault.tokenId }).length === 0 ? i : null;
 }
 function snapshot() {
-  return { vault, artifact: liveArtifact(), approved: vault ? store.approved[lower3(vault.address)] || null : null, intent: keptIntent(), registered: vault ? store.registered[lower3(vault.address)] || null : null, pendingHashes: vault ? perVault(store.pendingApprovals, vault.address) : [], imdSeat, agentReusable };
+  return { vault, artifact: liveArtifact(), approved: vault ? store.approved[lower4(vault.address)] || null : null, intent: keptIntent(), registered: vault ? store.registered[lower4(vault.address)] || null : null, pendingHashes: vault ? pendingFor(store.pending, vault.address).map(([h]) => h) : [], imdSeat, agentReusable };
+}
+async function applyReceipt(hash3, receipt) {
+  reload();
+  if (!store.pending[lower4(hash3)]) return null;
+  let sent = null;
+  try {
+    sent = await wallet.client.getTransaction({ hash: hash3 });
+  } catch {
+    sent = null;
+  }
+  const settle = () => {
+    reload();
+    const op = store.pending[lower4(hash3)];
+    if (!op) return null;
+    const agentId = op.action === "registerAgent" ? decodeLogs(receipt).find((e) => e.name === "AgentRegistered" && lower4(e.address) === lower4(op.vault))?.args.agentId ?? null : null;
+    const r = settleReceipt(store, hash3, receipt, sent, { agentId });
+    store = r.record;
+    save();
+    const what = op.action === "approvePairing" ? "approval" : op.action === "registerAgent" ? "registration" : op.action;
+    log(`${what} ${short(lower4(hash3))} ${r.status === "success" ? "mined" : r.status === "reverted" ? "reverted" : "does not match what this page sent"}`);
+    return r;
+  };
+  return navigator.locks ? navigator.locks.request(`${KEY}:record`, settle) : settle();
 }
 async function refresh() {
   if (!onChain()) {
@@ -19359,7 +19410,7 @@ async function refresh() {
   try {
     if (store.vault) {
       const selected = store.vault;
-      if (vaultProven !== true || lower3(vault?.address) !== lower3(selected)) {
+      if (vaultProven !== true || lower4(vault?.address) !== lower4(selected)) {
         vaultProven = await isFactoryVault(wallet.client, CONFIG.factory, selected, { fromBlock: CONFIG.factoryBlock || 0 });
         if (!vaultProven) {
           vault = null;
@@ -19368,13 +19419,13 @@ async function refresh() {
         }
       }
       const v = await readVault(wallet.client, selected);
-      if (lower3(v.collection) !== lower3(CONFIG.collection)) {
+      if (lower4(v.collection) !== lower4(CONFIG.collection)) {
         vaultProven = false;
         vault = null;
         render();
         return;
       }
-      if (lower3(vault?.address) !== lower3(v.address)) {
+      if (lower4(vault?.address) !== lower4(v.address)) {
         imdSeat = null;
         imdChecked = false;
         agentReusable = null;
@@ -19382,17 +19433,19 @@ async function refresh() {
       }
       vault = v;
       reload();
-      const list = perVault(store.pendingApprovals, vault.address);
-      for (const hash3 of [...list]) {
+      for (const [hash3] of pendingFor(store.pending)) {
         try {
           const r = await wallet.client.getTransactionReceipt({ hash: hash3 });
-          if (r) {
-            list.splice(list.indexOf(hash3), 1);
-            save();
-            log(`approval ${short(hash3)} ${r.status === "success" ? "mined" : "reverted"}`);
-          }
+          if (r) await applyReceipt(hash3, r);
         } catch {
         }
+      }
+      const art = storedArtifact();
+      if (art && !store.approved[lower4(vault.address)] && lower4(vault.approvedDigest) === lower4(art.digest) && vault.approvedUntil > Math.floor(Date.now() / 1e3)) {
+        reload();
+        store.approved[lower4(vault.address)] = { digest: art.digest, code: art.code, at: (/* @__PURE__ */ new Date()).toISOString(), source: "chain" };
+        save();
+        log(`approval for code ${art.code} seen on the vault`);
       }
       if (Date.now() - imdAt > 3e4) {
         imdAt = Date.now();
@@ -19417,63 +19470,62 @@ async function refresh() {
   }
   render();
 }
-async function sendTx(action, built, title, text, { protect = false, recheck = () => null } = {}) {
+function withVaultLock(vaultAddr, fn) {
+  if (!navigator.locks) return Promise.reject(new Error("tab coordination needs this page served over https (or localhost); nothing was sent"));
+  return navigator.locks.request(`${KEY}:vault:${lower4(vaultAddr)}`, { ifAvailable: true }, async (lock) => {
+    if (!lock) throw new Error("another tab is sending a transaction for this agreement; nothing was sent");
+    return fn();
+  });
+}
+async function sendTx(action, built, title, text, { protect = null, recheck = () => null } = {}) {
   if (busy) return null;
   if (!onChain()) {
     toast(`Connect the wallet on chain ${CONFIG.chainId} first.`, true);
     return null;
   }
   const reviewed = signingContext({ chainId: wallet.chainId, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
+  const vaultAddr = vault?.address || null;
   busy = true;
   render();
   try {
-    if (protect) {
-      try {
-        localStorage.setItem(LOCK + ":probe", "1");
-        localStorage.removeItem(LOCK + ":probe");
-      } catch {
-        storageOk = false;
-      }
-    }
-    if (protect && !storageOk) throw new Error("this browser cannot keep a record of the approval; use a browser where site data is allowed");
     const ok = await confirmDialog(`<h2>${esc(title)}</h2><p>${esc(text)}</p><p class="hint">This is an on-chain transaction; your wallet shows the gas cost.</p><details><summary>Exact transaction</summary><p class="offer">To ${esc(built.to)}<br>Data ${esc(built.data)}</p></details>`);
     if (!ok) return null;
-    const chainNow = parseInt(await wallet.eth.request({ method: "eth_chainId" }), 16);
-    const accounts = await wallet.eth.request({ method: "eth_accounts" });
-    wallet.chainId = chainNow;
-    wallet.address = accounts[0] || null;
-    const current = signingContext({ chainId: chainNow, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
-    if (!contextUnchanged(reviewed, current)) throw new Error("the wallet, chain or agreement changed while you were reviewing; nothing was sent");
-    const why = recheck();
-    if (why) throw new Error(why);
-    if (protect) {
-      reload();
-      if (perVault(store.pendingApprovals, vault.address).length) throw new Error("an earlier approval is still unresolved; nothing was sent");
-      if (!lockIsFree(localStorage.getItem(LOCK + ":" + lower3(vault.address)))) throw new Error("another tab is sending an approval for this vault; nothing was sent");
-      localStorage.setItem(LOCK + ":" + lower3(vault.address), String(Date.now()));
-    }
-    let hash3;
-    try {
-      hash3 = await wallet.eth.request({ method: "eth_sendTransaction", params: [{ from: wallet.address, to: built.to, data: built.data, value: "0x0" }] });
-    } finally {
-      if (protect) localStorage.removeItem(LOCK + ":" + lower3(vault.address));
-    }
+    const send = async () => {
+      const chainNow = parseInt(await wallet.eth.request({ method: "eth_chainId" }), 16);
+      const accounts = await wallet.eth.request({ method: "eth_accounts" });
+      wallet.chainId = chainNow;
+      wallet.address = accounts[0] || null;
+      const current = signingContext({ chainId: chainNow, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
+      if (!contextUnchanged(reviewed, current)) throw new Error("the wallet, chain or agreement changed while you were reviewing; nothing was sent");
+      const why = recheck();
+      if (why) throw new Error(why);
+      if (protect) {
+        reload();
+        if (pendingFor(store.pending, vaultAddr).length) throw new Error("an earlier transaction for this agreement is still unresolved; nothing was sent");
+        try {
+          localStorage.setItem(KEY + ":probe", "1");
+          localStorage.removeItem(KEY + ":probe");
+        } catch {
+          storageOk = false;
+        }
+        if (!storageOk) throw new Error("this browser cannot keep a record of the approval; use a browser where site data is allowed");
+      }
+      const h = await wallet.eth.request({ method: "eth_sendTransaction", params: [{ from: wallet.address, to: built.to, data: built.data, value: "0x0" }] });
+      if (protect) {
+        reload();
+        store.pending[lower4(h)] = { vault: lower4(vaultAddr), action, to: lower4(built.to), data: built.data, ...protect, at: (/* @__PURE__ */ new Date()).toISOString() };
+        save();
+        if (!storageOk) toast(`${title}: sent, but this browser could not record it; do not send another before it is mined`, true);
+      }
+      return h;
+    };
+    const hash3 = protect ? await withVaultLock(vaultAddr, send) : await send();
     log(`${title}: sent ${hash3}`);
-    if (protect) {
-      perVault(store.pendingApprovals, vault.address).push(hash3);
-      save();
-      render();
-    }
     toast(`${title}: sent, waiting for confirmation`);
+    render();
     const receipt = await waitReceipt(wallet.client, hash3);
-    if (protect) {
-      reload();
-      const l = perVault(store.pendingApprovals, vault.address);
-      const i = l.indexOf(hash3);
-      if (i >= 0) l.splice(i, 1);
-      save();
-    }
-    log(`${title}: ${receipt.status === "success" ? "confirmed" : "reverted"} in block ${receipt.blockNumber}`);
+    if (protect) await applyReceipt(hash3, receipt);
+    else log(`${title}: ${receipt.status === "success" ? "confirmed" : "reverted"} in block ${receipt.blockNumber}`);
     if (receipt.status !== "success") toast(`${title}: the transaction reverted`, true);
     return receipt;
   } catch (e) {
@@ -19527,7 +19579,8 @@ async function selectVault(address) {
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("not an address");
   if (!await isFactoryVault(wallet.client, CONFIG.factory, address, { fromBlock: CONFIG.factoryBlock || 0 })) throw new Error("that address was not created by this factory; the page only works with vaults the factory made");
   const v = await readVault(wallet.client, address);
-  if (lower3(v.collection) !== lower3(CONFIG.collection)) throw new Error("that vault is for another collection");
+  if (lower4(v.collection) !== lower4(CONFIG.collection)) throw new Error("that vault is for another collection");
+  reload();
   store.vault = address;
   store.artifactText = null;
   save();
@@ -19552,7 +19605,7 @@ var actions = {
       `A vault for seat #${f.tokenId.trim()} with host ${short(offer.provider)}: you keep ${100 - offer.providerBps / 100}%, the host receives ${offer.providerBps / 100}%. No daily fee, no deposit.`
     );
     if (!receipt) return;
-    const created = decodeLogs(receipt).find((e) => e.name === "VaultCreated" && lower3(e.address) === lower3(CONFIG.factory));
+    const created = decodeLogs(receipt).find((e) => e.name === "VaultCreated" && lower4(e.address) === lower4(CONFIG.factory));
     if (!created) throw new Error("no VaultCreated event in the receipt");
     log(`vault ${created.args.vault} created`);
     await selectVault(created.args.vault);
@@ -19565,10 +19618,10 @@ var actions = {
     const problems = checkPairingOfferAgainstVault(a, vault, CONFIG);
     if (problems.length) throw new Error(problems.join("; "));
     const digest = await workerAuthorizationDigest(wallet.client, vault.address, a.message.deviceKey, a.message.nonce, a.message.expiresAt);
-    if (lower3(digest) !== lower3(a.digest)) throw new Error("the string's digest does not match what this vault computes");
+    if (lower4(digest) !== lower4(a.digest)) throw new Error("the string's digest does not match what this vault computes");
     reload();
     store.artifactText = f.offer.trim();
-    if (a.intent) store.intents[lower3(vault.address)] = a.intent;
+    if (a.intent) store.intents[lower4(vault.address)] = a.intent;
     save();
     log(`pairing string ${a.code} accepted; approve before ${new Date(a.message.expiresAt * 1e3).toISOString()}`);
     await refresh();
@@ -19579,19 +19632,13 @@ var actions = {
       toast("The pairing string expired; ask the host for a fresh one.", true);
       return;
     }
-    const receipt = await sendTx(
+    await sendTx(
       "approvePairing",
       tx.approvePairing(vault.address, a.message.nonce, a.message.expiresAt, a.message.relayOrigin),
       "Approve the pairing",
       `Approve exactly this pairing (code ${a.code}) for your host's device. It must be mined before ${new Date(a.message.expiresAt * 1e3).toLocaleTimeString()}.`,
-      { protect: true, recheck: () => expiryProblems(a, Date.now()).length ? "the pairing string expired while you were reviewing; ask the host for a fresh one" : null }
+      { protect: { digest: a.digest, code: a.code }, recheck: () => expiryProblems(a, Date.now()).length ? "the pairing string expired while you were reviewing; ask the host for a fresh one" : null }
     );
-    if (receipt && receipt.status === "success") {
-      reload();
-      store.approved[lower3(vault.address)] = { digest: a.digest, code: a.code, at: (/* @__PURE__ */ new Date()).toISOString() };
-      save();
-      log(`pairing ${a.code} approved; your host completes it`);
-    }
   },
   registerAgent: async () => {
     const intent = keptIntent();
@@ -19599,14 +19646,7 @@ var actions = {
       toast("No valid registration intent in hand; paste the pairing string again.", true);
       return;
     }
-    const receipt = await sendTx("registerAgent", tx.registerAgent(vault.address, intent.data), "Register the agent", "IMD's registration for this seat, sent through the vault. The page checked it names this seat and IMD's registrar.");
-    if (receipt && receipt.status === "success") {
-      const ev = decodeLogs(receipt).find((e) => e.name === "AgentRegistered");
-      reload();
-      store.registered[lower3(vault.address)] = { agentId: ev ? ev.args.agentId : null, txHash: receipt.transactionHash };
-      save();
-      log(`agent ${ev ? ev.args.agentId : "?"} registered; your host binds it on IMD`);
-    }
+    await sendTx("registerAgent", tx.registerAgent(vault.address, intent.data), "Register the agent", "IMD's registration for this seat, sent through the vault. The page checked it names this seat and IMD's registrar.", { protect: {} });
   },
   claim: () => sendTx("claim", tx.claim(vault.address), "Claim my rewards", "Sends your share of the rewards in the vault to your wallet."),
   withdraw: () => showForm("Take my NFT back", [["to", "Send the NFT to", wallet.address || ""]], (f) => sendTx("withdraw", tx.withdraw(vault.address, f.to.trim()), "Take my NFT back", "Ends the agreement and returns the NFT in one transaction. Rewards already here stay claimable.")),
@@ -19622,7 +19662,7 @@ function render() {
   $("changeVault")?.addEventListener("click", actions.selectVault);
   const main = $("main");
   const notes = [];
-  if (lower3(c.factory) === ZERO) notes.push('<div class="note error">This page has no factory address configured yet; nothing can be created until the contracts are deployed.</div>');
+  if (lower4(c.factory) === ZERO) notes.push('<div class="note error">This page has no factory address configured yet; nothing can be created until the contracts are deployed.</div>');
   if (!storageOk) notes.push(`<div class="note error">This browser refuses to store the page's record; approvals are disabled here because an unresolved one could be forgotten.</div>`);
   if (!wallet.address) {
     main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Your NFT, hosted</h1><p class="lead">Hand your seat to a host who runs the worker. Rewards split by a fixed share, no fee, no deposit, and you can take the NFT back at any time.</p><button class="button primary" id="connectMain">Connect wallet</button><p class="hint">Reads go through your wallet's own connection; nothing is sent anywhere until you approve a transaction.</p>`;
@@ -19631,15 +19671,15 @@ function render() {
     main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Wrong network</h1><p class="lead">Switch your wallet to chain ${c.chainId}.</p><button class="button primary" id="switchMain">Switch network</button>`;
     $("switchMain").onclick = switchChain;
   } else if (!vault) {
-    main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Start</h1><p class="lead">Ask your host for their hosting offer string, then create the vault for your seat. Or open an agreement that already exists.</p><button class="button primary" data-action="create" ${lower3(c.factory) === ZERO ? "disabled" : ""}>Create the vault</button><div class="actions"><button class="button small" data-action="selectVault">Open an existing agreement</button></div>`;
+    main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>Start</h1><p class="lead">Ask your host for their hosting offer string, then create the vault for your seat. Or open an agreement that already exists.</p><button class="button primary" data-action="create" ${lower4(c.factory) === ZERO ? "disabled" : ""}>Create the vault</button><div class="actions"><button class="button small" data-action="selectVault">Open an existing agreement</button></div>`;
   } else {
     const d = derive(snapshot());
     const mine = r === "owner" ? d.owner : r === "host" ? d.host : [];
     const primary = mine.find((a2) => !a2.passive && !a2.secondary);
     const waiting = mine.find((a2) => a2.passive);
     const secondary = mine.filter((a2) => a2.secondary);
-    const titles = { create: "Start", deposit: "Move your NFT in", pair: "Approve the pairing", register: "Register the agent", done: "Your side is done", exit: vault.ended && lower3(vault.seatOwner) !== lower3(vault.address) ? "Agreement ended" : "Take your NFT back" };
-    const seatIn = lower3(vault.seatOwner) === lower3(vault.address);
+    const titles = { create: "Start", deposit: "Move your NFT in", pair: "Approve the pairing", register: "Register the agent", done: "Your side is done", exit: vault.ended && lower4(vault.seatOwner) !== lower4(vault.address) ? "Agreement ended" : "Take your NFT back" };
+    const seatIn = lower4(vault.seatOwner) === lower4(vault.address);
     const a = liveArtifact();
     main.innerHTML = `<span class="eyebrow">ONE NFT / ONE HOST</span><h1>${esc(titles[d.step])}</h1>
       <span class="status${d.step === "done" ? "" : " warn"}">${esc(d.step === "done" ? "SET UP \xB7 HOST CONFIRMS" : d.step.toUpperCase())}</span>
@@ -19659,10 +19699,10 @@ function render() {
       ["operator", esc(vault.operator)],
       ["device key", esc(vault.deviceKey)],
       ["live approval on the vault", vault.approvedUntil > Date.now() / 1e3 ? `${esc(vault.approvedDigest)} until ${esc(new Date(vault.approvedUntil * 1e3).toISOString())}` : "none"],
-      ["your mined approval", s2.approved ? `code ${esc(s2.approved.code)} at ${esc(s2.approved.at)}` : "\u2014"],
-      ["unresolved approvals", s2.pendingHashes.length ? esc(s2.pendingHashes.join(", ")) : "none"],
+      ["your mined approval", s2.approved ? `code ${esc(s2.approved.code)} at ${esc(s2.approved.at)}${s2.approved.txHash ? ` (${esc(short(s2.approved.txHash))})` : " (seen on the vault)"}` : "\u2014"],
+      ["unresolved transactions", s2.pendingHashes.length ? esc(s2.pendingHashes.join(", ")) : "none"],
       ["registration kept", s2.intent ? "yes" : "\u2014"],
-      ["your registration", s2.registered ? `agent ${esc(s2.registered.agentId)} in ${esc(short(s2.registered.txHash))}` : "\u2014"],
+      ["your registration", s2.registered ? `agent ${esc(s2.registered.agentId ?? "?")} in ${esc(short(s2.registered.txHash))}` : "\u2014"],
       ["existing agent reusable", s2.agentReusable === true ? "yes" : s2.agentReusable === false ? "no" : "unknown"],
       ["rewards in the vault", `${esc(formatUnits2(vault.rewardBalance, c.rewardDecimals))} ${esc(c.rewardSymbol)} (unsettled ${esc(formatUnits2(vault.pending, c.rewardDecimals))})`],
       ["owner claimable", `${esc(formatUnits2(vault.claimableOwner, c.rewardDecimals))} ${esc(c.rewardSymbol)}`],

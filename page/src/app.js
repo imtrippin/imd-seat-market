@@ -1,22 +1,22 @@
 // The agreement page: one static file for the NFT owner and the host. It reads the vault through the connected
 // wallet, reads IMD's open swarm listing, shows one next action, and asks the wallet to sign exactly the call it
 // showed, under the same chain, account and vault. Nothing is stored anywhere but this browser: the selected
-// vault, the pasted strings, the owner's mined approval and registration, unresolved approvals, a short history.
+// vault, the pasted strings, the owner's mined approval and registration, unresolved and resolved transactions,
+// a short history. Tabs of one browser coordinate through the Web Locks API and share one record.
 import { providerClient, readVault, isFactoryVault, tx, waitReceipt, decodeLogs, vaultControlsAgent, workerAuthorizationDigest, formatUnits } from '../../host/lib/chain.js';
-import { decodeOffer, validateHostingOffer, checkPairingOfferAgainstVault, validateIntent, expiryProblems, HOSTING_PREFIX, PAIRING_PREFIX } from '../../host/lib/pairing.js';
+import { decodeOffer, validateHostingOffer, checkPairingOfferAgainstVault, validateIntent, validateArtifact, expiryProblems, HOSTING_PREFIX, PAIRING_PREFIX } from '../../host/lib/pairing.js';
 import { derive } from '../../host/lib/steps.js';
-import { emptyRecord, mergeRecords, signingContext, contextUnchanged, lockIsFree } from './guards.js';
+import { emptyRecord, mergeRecords, pendingFor, settleReceipt, signingContext, contextUnchanged } from './guards.js';
 
 const CONFIG = __CONFIG__; // baked in at build time from page/config.json
 const KEY = `seat-page:${CONFIG.chainId}`;
-const LOCK = `${KEY}:lock`;
 const ZERO = '0x0000000000000000000000000000000000000000';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 const lower = (a) => String(a || '').toLowerCase();
 
-// ---------------------------------------------------------------- the browser record (merged before every protected step)
+// ---------------------------------------------------------------- the browser record (merged before every save)
 
 let store = emptyRecord();
 let storageOk = true;
@@ -31,7 +31,6 @@ function save() {
   try { localStorage.setItem(KEY, JSON.stringify(store)); storageOk = true; } catch { storageOk = false; }
 }
 function log(text) { store.log.push({ at: new Date().toISOString(), text }); if (store.log.length > 200) store.log.splice(0, store.log.length - 200); save(); }
-const perVault = (map, vault) => (map[lower(vault)] ||= []);
 window.addEventListener('storage', (e) => { if (e.key === KEY) { reload(); render(); } });
 reload();
 
@@ -74,6 +73,15 @@ function role() {
   return 'viewer';
 }
 
+/// The pasted pairing string as stored, if it decodes and is for this vault (its deadlines are not considered).
+function storedArtifact() {
+  if (!store.artifactText || !vault) return null;
+  try {
+    const a = decodeOffer(PAIRING_PREFIX, store.artifactText);
+    return validateArtifact(a).length === 0 && lower(a.vault) === lower(vault.address) ? a : null;
+  } catch { return null; }
+}
+
 /// The pasted pairing string, only while it still checks out against the vault and both its deadlines are ahead.
 function liveArtifact() {
   if (!store.artifactText || !vault) return null;
@@ -88,7 +96,31 @@ function keptIntent() {
 }
 
 function snapshot() {
-  return { vault, artifact: liveArtifact(), approved: vault ? store.approved[lower(vault.address)] || null : null, intent: keptIntent(), registered: vault ? store.registered[lower(vault.address)] || null : null, pendingHashes: vault ? perVault(store.pendingApprovals, vault.address) : [], imdSeat, agentReusable };
+  return { vault, artifact: liveArtifact(), approved: vault ? store.approved[lower(vault.address)] || null : null, intent: keptIntent(), registered: vault ? store.registered[lower(vault.address)] || null : null, pendingHashes: vault ? pendingFor(store.pending, vault.address).map(([h]) => h) : [], imdSeat, agentReusable };
+}
+
+/// One mined transaction becomes a record here, whether this tab sent it or found its receipt after a reload: the
+/// receipt and the mined transaction are checked against the operation recorded at send time, and success
+/// reconstructs the approval or the registration for the operation's own vault. Resolved for every tab.
+async function applyReceipt(hash, receipt) {
+  reload();
+  if (!store.pending[lower(hash)]) return null;
+  let sent = null;
+  try { sent = await wallet.client.getTransaction({ hash }); } catch { sent = null; }
+  // the settlement itself is serialized across tabs (a receipt two tabs found at once is settled by one of them)
+  const settle = () => {
+    reload();
+    const op = store.pending[lower(hash)];
+    if (!op) return null;
+    const agentId = op.action === 'registerAgent' ? (decodeLogs(receipt).find((e) => e.name === 'AgentRegistered' && lower(e.address) === lower(op.vault))?.args.agentId ?? null) : null;
+    const r = settleReceipt(store, hash, receipt, sent, { agentId });
+    store = r.record;
+    save();
+    const what = op.action === 'approvePairing' ? 'approval' : op.action === 'registerAgent' ? 'registration' : op.action;
+    log(`${what} ${short(lower(hash))} ${r.status === 'success' ? 'mined' : r.status === 'reverted' ? 'reverted' : 'does not match what this page sent'}`);
+    return r;
+  };
+  return navigator.locks ? navigator.locks.request(`${KEY}:record`, settle) : settle();
 }
 
 async function refresh() {
@@ -105,9 +137,18 @@ async function refresh() {
       if (lower(vault?.address) !== lower(v.address)) { imdSeat = null; imdChecked = false; agentReusable = null; imdAt = 0; }
       vault = v;
       reload();
-      const list = perVault(store.pendingApprovals, vault.address);
-      for (const hash of [...list]) {
-        try { const r = await wallet.client.getTransactionReceipt({ hash }); if (r) { list.splice(list.indexOf(hash), 1); save(); log(`approval ${short(hash)} ${r.status === 'success' ? 'mined' : 'reverted'}`); } } catch { /* still pending */ }
+      // unresolved transactions of any vault: a receipt settles them, whichever tab sent them
+      for (const [hash] of pendingFor(store.pending)) {
+        try { const r = await wallet.client.getTransactionReceipt({ hash }); if (r) await applyReceipt(hash, r); } catch { /* still pending */ }
+      }
+      // a tab closed while the wallet prompt was open leaves no hash; the approval of exactly the pasted string's
+      // digest, live on the vault, is evidence enough and is recorded so it survives the string's deadlines
+      const art = storedArtifact();
+      if (art && !store.approved[lower(vault.address)] && lower(vault.approvedDigest) === lower(art.digest) && vault.approvedUntil > Math.floor(Date.now() / 1000)) {
+        reload();
+        store.approved[lower(vault.address)] = { digest: art.digest, code: art.code, at: new Date().toISOString(), source: 'chain' };
+        save();
+        log(`approval for code ${art.code} seen on the vault`);
       }
       if (Date.now() - imdAt > 30_000) {
         imdAt = Date.now();
@@ -126,39 +167,60 @@ async function refresh() {
 
 // ---------------------------------------------------------------- sending a prepared call
 
-async function sendTx(action, built, title, text, { protect = false, recheck = () => null } = {}) {
+/// Tabs of this browser take turns per vault through the Web Locks API: the lock is held from before the wallet
+/// request until the hash is durably recorded, and a tab that closes releases it. Nothing is time-based, and no tab
+/// can clear another tab's lock. Web Locks need a secure context (https, or localhost).
+function withVaultLock(vaultAddr, fn) {
+  if (!navigator.locks) return Promise.reject(new Error('tab coordination needs this page served over https (or localhost); nothing was sent'));
+  return navigator.locks.request(`${KEY}:vault:${lower(vaultAddr)}`, { ifAvailable: true }, async (lock) => {
+    if (!lock) throw new Error('another tab is sending a transaction for this agreement; nothing was sent');
+    return fn();
+  });
+}
+
+/// `protect` (an object, with the digest and code for an approval) marks an operation this browser must be able to
+/// recover: it is refused while another one for the vault is unresolved, refused without durable storage, and its
+/// hash is recorded with its context before the lock is released.
+async function sendTx(action, built, title, text, { protect = null, recheck = () => null } = {}) {
   if (busy) return null;
   if (!onChain()) { toast(`Connect the wallet on chain ${CONFIG.chainId} first.`, true); return null; }
   const reviewed = signingContext({ chainId: wallet.chainId, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
+  const vaultAddr = vault?.address || null;
   busy = true; render();
   try {
-    if (protect) { try { localStorage.setItem(LOCK + ':probe', '1'); localStorage.removeItem(LOCK + ':probe'); } catch { storageOk = false; } }
-    if (protect && !storageOk) throw new Error('this browser cannot keep a record of the approval; use a browser where site data is allowed');
     const ok = await confirmDialog(`<h2>${esc(title)}</h2><p>${esc(text)}</p><p class="hint">This is an on-chain transaction; your wallet shows the gas cost.</p><details><summary>Exact transaction</summary><p class="offer">To ${esc(built.to)}<br>Data ${esc(built.data)}</p></details>`);
     if (!ok) return null;
-    // the wallet request is made under the reviewed context or not at all
-    const chainNow = parseInt(await wallet.eth.request({ method: 'eth_chainId' }), 16);
-    const accounts = await wallet.eth.request({ method: 'eth_accounts' });
-    wallet.chainId = chainNow; wallet.address = accounts[0] || null;
-    const current = signingContext({ chainId: chainNow, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
-    if (!contextUnchanged(reviewed, current)) throw new Error('the wallet, chain or agreement changed while you were reviewing; nothing was sent');
-    const why = recheck();
-    if (why) throw new Error(why);
-    if (protect) {
-      reload();
-      if (perVault(store.pendingApprovals, vault.address).length) throw new Error('an earlier approval is still unresolved; nothing was sent');
-      if (!lockIsFree(localStorage.getItem(LOCK + ':' + lower(vault.address)))) throw new Error('another tab is sending an approval for this vault; nothing was sent');
-      localStorage.setItem(LOCK + ':' + lower(vault.address), String(Date.now()));
-    }
-    let hash;
-    try { hash = await wallet.eth.request({ method: 'eth_sendTransaction', params: [{ from: wallet.address, to: built.to, data: built.data, value: '0x0' }] }); }
-    finally { if (protect) localStorage.removeItem(LOCK + ':' + lower(vault.address)); }
+    const send = async () => {
+      // the wallet request is made under the reviewed context or not at all
+      const chainNow = parseInt(await wallet.eth.request({ method: 'eth_chainId' }), 16);
+      const accounts = await wallet.eth.request({ method: 'eth_accounts' });
+      wallet.chainId = chainNow; wallet.address = accounts[0] || null;
+      const current = signingContext({ chainId: chainNow, account: wallet.address, vault: vault?.address, action, to: built.to, data: built.data });
+      if (!contextUnchanged(reviewed, current)) throw new Error('the wallet, chain or agreement changed while you were reviewing; nothing was sent');
+      const why = recheck();
+      if (why) throw new Error(why);
+      if (protect) {
+        reload();
+        if (pendingFor(store.pending, vaultAddr).length) throw new Error('an earlier transaction for this agreement is still unresolved; nothing was sent');
+        try { localStorage.setItem(KEY + ':probe', '1'); localStorage.removeItem(KEY + ':probe'); } catch { storageOk = false; }
+        if (!storageOk) throw new Error('this browser cannot keep a record of the approval; use a browser where site data is allowed');
+      }
+      const h = await wallet.eth.request({ method: 'eth_sendTransaction', params: [{ from: wallet.address, to: built.to, data: built.data, value: '0x0' }] });
+      if (protect) {
+        reload();
+        store.pending[lower(h)] = { vault: lower(vaultAddr), action, to: lower(built.to), data: built.data, ...protect, at: new Date().toISOString() };
+        save();
+        if (!storageOk) toast(`${title}: sent, but this browser could not record it; do not send another before it is mined`, true);
+      }
+      return h;
+    };
+    const hash = protect ? await withVaultLock(vaultAddr, send) : await send();
     log(`${title}: sent ${hash}`);
-    if (protect) { perVault(store.pendingApprovals, vault.address).push(hash); save(); render(); }
     toast(`${title}: sent, waiting for confirmation`);
+    render();
     const receipt = await waitReceipt(wallet.client, hash);
-    if (protect) { reload(); const l = perVault(store.pendingApprovals, vault.address); const i = l.indexOf(hash); if (i >= 0) l.splice(i, 1); save(); }
-    log(`${title}: ${receipt.status === 'success' ? 'confirmed' : 'reverted'} in block ${receipt.blockNumber}`);
+    if (protect) await applyReceipt(hash, receipt);
+    else log(`${title}: ${receipt.status === 'success' ? 'confirmed' : 'reverted'} in block ${receipt.blockNumber}`);
     if (receipt.status !== 'success') toast(`${title}: the transaction reverted`, true);
     return receipt;
   } catch (e) { toast(e.shortMessage || e.message, true); return null; }
@@ -205,6 +267,7 @@ async function selectVault(address) {
   if (!(await isFactoryVault(wallet.client, CONFIG.factory, address, { fromBlock: CONFIG.factoryBlock || 0 }))) throw new Error('that address was not created by this factory; the page only works with vaults the factory made');
   const v = await readVault(wallet.client, address);
   if (lower(v.collection) !== lower(CONFIG.collection)) throw new Error('that vault is for another collection');
+  reload();
   store.vault = address; store.artifactText = null; save();
   vault = null; vaultProven = null; imdSeat = null; imdChecked = false; agentReusable = null; imdAt = 0;
   await refresh();
@@ -243,19 +306,13 @@ const actions = {
   approvePairing: async () => {
     const a = liveArtifact();
     if (!a) { toast('The pairing string expired; ask the host for a fresh one.', true); return; }
-    const receipt = await sendTx('approvePairing', tx.approvePairing(vault.address, a.message.nonce, a.message.expiresAt, a.message.relayOrigin), 'Approve the pairing', `Approve exactly this pairing (code ${a.code}) for your host's device. It must be mined before ${new Date(a.message.expiresAt * 1000).toLocaleTimeString()}.`,
-      { protect: true, recheck: () => (expiryProblems(a, Date.now()).length ? 'the pairing string expired while you were reviewing; ask the host for a fresh one' : null) });
-    if (receipt && receipt.status === 'success') { reload(); store.approved[lower(vault.address)] = { digest: a.digest, code: a.code, at: new Date().toISOString() }; save(); log(`pairing ${a.code} approved; your host completes it`); }
+    await sendTx('approvePairing', tx.approvePairing(vault.address, a.message.nonce, a.message.expiresAt, a.message.relayOrigin), 'Approve the pairing', `Approve exactly this pairing (code ${a.code}) for your host's device. It must be mined before ${new Date(a.message.expiresAt * 1000).toLocaleTimeString()}.`,
+      { protect: { digest: a.digest, code: a.code }, recheck: () => (expiryProblems(a, Date.now()).length ? 'the pairing string expired while you were reviewing; ask the host for a fresh one' : null) });
   },
   registerAgent: async () => {
     const intent = keptIntent();
     if (!intent) { toast('No valid registration intent in hand; paste the pairing string again.', true); return; }
-    const receipt = await sendTx('registerAgent', tx.registerAgent(vault.address, intent.data), 'Register the agent', "IMD's registration for this seat, sent through the vault. The page checked it names this seat and IMD's registrar.");
-    if (receipt && receipt.status === 'success') {
-      const ev = decodeLogs(receipt).find((e) => e.name === 'AgentRegistered');
-      reload(); store.registered[lower(vault.address)] = { agentId: ev ? ev.args.agentId : null, txHash: receipt.transactionHash }; save();
-      log(`agent ${ev ? ev.args.agentId : '?'} registered; your host binds it on IMD`);
-    }
+    await sendTx('registerAgent', tx.registerAgent(vault.address, intent.data), 'Register the agent', "IMD's registration for this seat, sent through the vault. The page checked it names this seat and IMD's registrar.", { protect: {} });
   },
   claim: () => sendTx('claim', tx.claim(vault.address), 'Claim my rewards', 'Sends your share of the rewards in the vault to your wallet.'),
   withdraw: () => showForm('Take my NFT back', [['to', 'Send the NFT to', wallet.address || '']], (f) => sendTx('withdraw', tx.withdraw(vault.address, f.to.trim()), 'Take my NFT back', 'Ends the agreement and returns the NFT in one transaction. Rewards already here stay claimable.')),
@@ -311,9 +368,9 @@ function render() {
       ['NFT holder', esc(vault.seatOwner), seatIn ? 'ok' : ''], ['recorded as held', vault.held ? 'yes' : 'no', vault.held ? 'ok' : ''], ['agreement', vault.ended ? 'ended' : 'open', vault.ended ? '' : 'ok'],
       ['owner', esc(vault.owner)], ['host', esc(vault.provider)], ['operator', esc(vault.operator)], ['device key', esc(vault.deviceKey)],
       ['live approval on the vault', vault.approvedUntil > Date.now() / 1000 ? `${esc(vault.approvedDigest)} until ${esc(new Date(vault.approvedUntil * 1000).toISOString())}` : 'none'],
-      ['your mined approval', s.approved ? `code ${esc(s.approved.code)} at ${esc(s.approved.at)}` : '—'],
-      ['unresolved approvals', s.pendingHashes.length ? esc(s.pendingHashes.join(', ')) : 'none'],
-      ['registration kept', s.intent ? 'yes' : '—'], ['your registration', s.registered ? `agent ${esc(s.registered.agentId)} in ${esc(short(s.registered.txHash))}` : '—'],
+      ['your mined approval', s.approved ? `code ${esc(s.approved.code)} at ${esc(s.approved.at)}${s.approved.txHash ? ` (${esc(short(s.approved.txHash))})` : ' (seen on the vault)'}` : '—'],
+      ['unresolved transactions', s.pendingHashes.length ? esc(s.pendingHashes.join(', ')) : 'none'],
+      ['registration kept', s.intent ? 'yes' : '—'], ['your registration', s.registered ? `agent ${esc(s.registered.agentId ?? '?')} in ${esc(short(s.registered.txHash))}` : '—'],
       ['existing agent reusable', s.agentReusable === true ? 'yes' : s.agentReusable === false ? 'no' : 'unknown'],
       ['rewards in the vault', `${esc(formatUnits(vault.rewardBalance, c.rewardDecimals))} ${esc(c.rewardSymbol)} (unsettled ${esc(formatUnits(vault.pending, c.rewardDecimals))})`],
       ['owner claimable', `${esc(formatUnits(vault.claimableOwner, c.rewardDecimals))} ${esc(c.rewardSymbol)}`], ['host claimable', `${esc(formatUnits(vault.claimableProvider, c.rewardDecimals))} ${esc(c.rewardSymbol)}`],
